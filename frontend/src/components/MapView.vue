@@ -8,7 +8,7 @@
 import { onMounted, ref, watch } from 'vue'
 import { loadBmapGL } from '../bmap'
 
-const props = defineProps({ center: Array, result: Object })
+const props = defineProps({ center: Array, result: Object, actions: Array })
 const emit = defineEmits(['pick'])
 const el = ref(null)
 const loadError = ref('')
@@ -16,6 +16,7 @@ const loadError = ref('')
 let BMapGL = null
 let map = null
 let overlays = []
+let agentOverlays = []
 let centerMarker = null
 
 const RING_STYLE = {
@@ -24,6 +25,12 @@ const RING_STYLE = {
   '15': { strokeColor: '#17b26a', fillColor: '#17b26a', fillOpacity: 0.06 }
 }
 const CAT_COLORS = { medical: '#e5484d', education: '#8e4ec6', shopping: '#f76b15', elderly: '#0091ff' }
+// 智能体产出的地图标注：与体检图层分开管理，互不覆盖
+const ACTION_STYLE = {
+  center: { color: '#2f6fed', r: 90 },
+  facility: { color: '#17b26a', r: 80 },
+  poi: { color: '#8e4ec6', r: 55 }
+}
 
 onMounted(async () => {
   try {
@@ -44,6 +51,31 @@ onMounted(async () => {
 
 watch(() => props.center, (c) => { if (c && map) { setCenterMarker(c); map.panTo(new BMapGL.Point(c[1], c[0])) } })
 watch(() => props.result, renderOverlays)
+watch(() => props.actions, renderActions)
+
+function renderActions(list) {
+  if (!map) return
+  agentOverlays.forEach(o => map.removeOverlay(o))
+  agentOverlays = []
+  const items = list || []
+  items.forEach(a => {
+    // 盲区由体检结果图层统一渲染，避免与之重叠
+    if (a.kind === 'blindspot') return
+    const st = ACTION_STYLE[a.kind] || ACTION_STYLE.poi
+    const p = new BMapGL.Point(a.lng, a.lat)
+    const c = new BMapGL.Circle(p, st.r, {
+      strokeWeight: 2, strokeColor: st.color, fillColor: st.color, fillOpacity: 0.25
+    })
+    map.addOverlay(c); agentOverlays.push(c)
+    if (a.label) {
+      const lbl = new BMapGL.Label(a.label, { position: p, offset: new BMapGL.Size(10, -10) })
+      lbl.setStyle({ fontSize: '11px', color: st.color, border: 'none', background: 'rgba(255,255,255,.9)' })
+      map.addOverlay(lbl); agentOverlays.push(lbl)
+    }
+  })
+  const first = items.find(a => a.kind !== 'blindspot')
+  if (first && !props.result) map.panTo(new BMapGL.Point(first.lng, first.lat))
+}
 
 function setCenterMarker([lat, lng]) {
   if (!map) return

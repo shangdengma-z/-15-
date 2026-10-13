@@ -32,45 +32,59 @@ def _grid_in_ring(ring: list) -> list:
     return pts
 
 
+def _min_straight_m(pt: tuple, pois: list) -> float:
+    return min((straight_line_m(pt, (p["lng"], p["lat"])) for p in pois), default=1e9)
+
+
+def required_pois(pois: dict) -> dict:
+    """从大类检索结果中按名称关键词切出赛题必核单品（菜市场/药店/小学），不额外消耗配额。"""
+    return {key: [p for p in pois.get(spec["source"], []) if any(k in p["name"] for k in spec["keywords"])]
+            for key, spec in REQUIRED_CATEGORIES.items()}
+
+
 def _missing_near(pt: tuple, pois_by_cat: dict, cat_keys: list, limit_m: int) -> list:
-    missing = []
-    for key in cat_keys:
-        d = min((straight_line_m(pt, (p["lng"], p["lat"])) for p in pois_by_cat.get(key, [])), default=1e9)
-        if d > limit_m:
-            missing.append(key)
-    return missing
+    return [key for key in cat_keys if _min_straight_m(pt, pois_by_cat.get(key, [])) > limit_m]
 
 
 async def identify_blindspots(ring15: list, pois: dict) -> list:
-    """1) 网格初筛疑似盲区；2) 用批量步行距离矩阵核验，剔除直线误报。"""
+    """1) 网格初筛（四大类 + 赛题必核单品）；2) 用批量步行距离矩阵核验，剔除直线误报。"""
     grid = _grid_in_ring(ring15)
+    req = required_pois(pois)
     cat_keys = list(CATEGORIES.keys())
     candidates = []
     for pt in grid:
         missing = _missing_near(pt, pois, cat_keys, 1000)
-        if missing:
+        missing_req = [k for k, spec in REQUIRED_CATEGORIES.items()
+                       if _min_straight_m(pt, req[k]) > spec["limit"]]
+        if missing or missing_req:
+            preview = ([CATEGORIES[m]["name"] for m in missing]
+                       + [REQUIRED_CATEGORIES[m]["name"] for m in missing_req])
             candidates.append({"lng": round(pt[0], 6), "lat": round(pt[1], 6),
-                               "missing_preview": [CATEGORIES[m]["name"] for m in missing],
-                               "_missing_keys": missing})
-    candidates.sort(key=lambda c: len(c["_missing_keys"]), reverse=True)
+                               "missing_preview": preview,
+                               "_missing_keys": missing, "_missing_req": missing_req})
+    candidates.sort(key=lambda c: len(c["_missing_keys"]) + len(c["_missing_req"]), reverse=True)
     verify = candidates[:MAX_CANDIDATES]
 
     # 核验：候选点到该类最近 5 个 POI 的真实步行距离必须也超限才判为盲区
     checked = []
     for cand in verify:
+        specs = [(CATEGORIES[k]["name"], 1000, pois.get(k, [])) for k in cand["_missing_keys"]]
+        specs += [(REQUIRED_CATEGORIES[k]["name"], REQUIRED_CATEGORIES[k]["limit"], req[k])
+                  for k in cand["_missing_req"]]
         tasks = []
-        for key in cand["_missing_keys"]:
-            nearest = sorted(pois.get(key, []),
-                             key=lambda p: straight_line_m((cand["lng"], cand["lat"]), (p["lng"], p["lat"])))[:5]
+        for name, limit, pool in specs:
+            nearest = sorted(pool, key=lambda p: straight_line_m((cand["lng"], cand["lat"]),
+                                                                 (p["lng"], p["lat"])))[:5]
             if nearest:
-                origins = [(cand["lat"], cand["lng"])]
-                dests = [(p["lat"], p["lng"]) for p in nearest]
-                tasks.append((key, client.distance_matrix(origins, dests)))
+                tasks.append(((name, limit),
+                              client.distance_matrix([(cand["lat"], cand["lng"])],
+                                                     [(p["lat"], p["lng"]) for p in nearest])))
         results = await asyncio.gather(*(t[1] for t in tasks)) if tasks else []
         confirmed = []
-        for (key, _), rows in zip(tasks, results):
-            if min(rows[0]) > 1000:
-                confirmed.append(CATEGORIES[key]["name"])
+        for (meta, _), rows in zip(tasks, results):
+            name, limit = meta
+            if min(rows[0]) > limit:
+                confirmed.append(name)
         if confirmed:
             checked.append({k: v for k, v in cand.items() if not k.startswith("_")}
                             | {"missing": confirmed, "verified": True})
@@ -115,6 +129,6 @@ async def run_analysis(center: tuple) -> dict:
             "degraded": client.degraded,
             "retry_count": client.retry_count,
             "matrix_fallback": not client.matrix_ok,
-            "required_check": {v[0]: f"步行{v[1]}m内必达" for v in REQUIRED_CATEGORIES.values()},
+            "required_check": {v["name"]: f"步行{v['limit']}m内必达" for v in REQUIRED_CATEGORIES.values()},
         },
     }

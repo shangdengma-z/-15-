@@ -12,6 +12,9 @@
 2. 「开始体检」→ 后端扇形射线采样真实步行耗时，插值生成 5/10/15 分钟三层等时圈
 3. 地图叠加：等时圈等值面、按真实耗时着色的热力散点、分类 POI 标点、盲区灰红标记
 4. 右侧报告：健康分、设施柱状图、覆盖雷达图、盲区清单（含批量距离矩阵核验结果）
+5. 「AI 规划助手」：用自然语言提问（如"这里适合开药店吗"），智能体自主决定调用地名解析、
+   等时圈体检、真实步行测距、POI 检索等工具，基于返回的真实数据输出诊断结论与规划建议，
+   并把结论对应的点位回标到地图上；面板实时展示工具调用轨迹
 
 ## 核心技术设计
 
@@ -25,13 +28,36 @@
 ### 服务盲区识别（两阶段）
 1. **初筛**：在 15 分钟圈内铺设 300m 网格，直线距离粗筛"1km 内缺乏某类设施"的候选点；
 2. **核验**：候选点经**批量步行距离矩阵**（`/distancematrix/v1/walking/`）到该类最近 5 个
-   POI 的真实步行距离复核，剔除直线误报（如河桥绕行），保证报告可信。
+   POI 的真实步行距离复核，剔除直线误报（如河桥绕行），保证报告可信；
+3. **必核单品**：除医疗/教育/购物/养老四大类外，按赛题字面要求把**菜市场、药店、小学**
+   三个单品单独纳入盲区判定（从大类检索结果按名称关键词切分，不额外消耗配额），
+   避免"有便利店但无菜市场"这类漏判。
 
 ### API 工程优化
 - 令牌桶限流（`BMAP_QPS`）+ 信号量并发（`BMAP_CONCURRENCY`），贴合个人 AK 配额
 - 指数退避重试（code=4/10 限流类错误），超限后**降级为直线估算并在报告中明确标注**
 - 全量请求级磁盘缓存（`data/cache/`，演示前预热一次即可秒级复现）
 - POI 数据清洗：多关键词并查 + 名称白名单二次过滤（剔除保健品店误入"药店"等）+ uid 去重
+
+### 规划智能体（LLM 工具编排）
+把体检能力封装为 5 个 function-calling 工具交给大模型自主编排，对应行业智能体的三要素：
+任务规划、工具调用、结果落地。
+
+| 工具 | 能力来源 |
+|---|---|
+| `geocode` | 地名/社区名 → 坐标（地理编码 v3） |
+| `health_check` | 完整体检：等时圈 + 覆盖统计 + 盲区核验 + 健康分 |
+| `nearest_facility` | 最近某类设施 + 真实步行距离/时间（步行路径规划 v2） |
+| `walking_time` | 两点真实路网步行耗时 |
+| `search_poi` | 圆形范围 POI 检索 |
+
+工程约束：
+- **受限循环**：单轮对话工具调用轮数上限 `AGENT_MAX_STEPS`（默认 4），超限强制收敛出结论
+- **参数校验与错误回填**：模型给错参数时把原因作为 tool 结果返回，由模型自行纠正而非中断
+- **结果缓存**：以完整请求体为键落盘，同一问题重放零 token、零延迟（演示视频可离线复现）
+- **三级降级**：未配置 `LLM_API_KEY` 或大模型故障时，自动退化为"固定编排 + 确定性规则文案"，
+  面板明确标注"规则模式"，保证产品打开即用、演示不翻车
+- 接口为 OpenAI 兼容 `/chat/completions`，默认对接 DeepSeek，换厂商只改 `LLM_BASE_URL`/`LLM_MODEL`
 
 ## 快速开始
 
@@ -44,6 +70,8 @@
    ```bash
    cp .env.example .env   # 编辑 .env 填入 AK/SK
    ```
+3. （可选）规划智能体：在 `.env` 填 `LLM_API_KEY`（OpenAI 兼容接口，默认 DeepSeek）。
+   留空则 AI 面板自动运行在规则模式，其余功能不受影响。
 
 ### Docker 一键启动
 ```bash
@@ -77,10 +105,14 @@ backend/app/        FastAPI 服务
   isochrone.py        等时圈射线采样与插值
   poi.py              POI 检索与清洗
   analysis.py         体检编排：覆盖统计 + 盲区两阶段识别
+  llm.py              OpenAI 兼容 LLM 客户端（function calling + 缓存 + 重试）
+  agent.py            规划智能体：工具定义、受限编排循环、规则模式降级
   main.py             HTTP API（异步任务 + 轮询）
+backend/tests/      离线自测（mock 地图 + 假 LLM，无需任何密钥）
 frontend/src/       Vue3 + Vite
-  components/MapView.vue      BMapGL 地图可视化
+  components/MapView.vue      BMapGL 地图可视化（含智能体点位回标）
   components/ReportPanel.vue  ECharts 体检报告
+  components/AgentPanel.vue   AI 规划助手对话面板（工具轨迹实时展示）
 ```
 
 ## API 文档
@@ -90,8 +122,18 @@ frontend/src/       Vue3 + Vite
 |---|---|
 | `POST /api/analysis` | 提交体检任务 `{lat, lng}` → `job_id` |
 | `GET /api/analysis/{job_id}` | 轮询进度 / 获取报告 JSON |
+| `POST /api/agent` | 规划智能体对话 `{message, history?, lat?, lng?}` → `job_id` |
+| `GET /api/agent/{job_id}` | 轮询对话进度（含实时工具轨迹）/ 获取结论与地图指令 |
 | `GET /api/preview` | 中心点合法性轻量探测 |
-| `GET /api/health` | 服务与 Mock 状态 |
+| `GET /api/health` | 服务、Mock 与大模型配置状态 |
+
+## 测试
+```bash
+# 离线自测：mock 地图 + 假 LLM，覆盖降级路径、工具编排、参数纠错、故障回落
+python backend/tests/test_agent_offline.py
+
+# CI（GitHub Actions）每次 push 自动执行：ruff 检查 + Mock 冒烟 + 前端构建 + 上述自测
+```
 
 ## License
 [MIT](LICENSE)

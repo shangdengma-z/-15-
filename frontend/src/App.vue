@@ -30,13 +30,22 @@
         </ul>
       </section>
     </aside>
-    <MapView class="map" :center="center" :result="result" @pick="onPick" />
-    <ReportPanel class="panel report" :result="result" />
+    <MapView class="map" :center="center" :result="result" :actions="agentActions" @pick="onPick" />
+    <div class="panel right" :class="{ flexed: tab === 'agent' }">
+      <div class="tabs">
+        <button :class="{ on: tab === 'report' }" @click="tab = 'report'">体检报告</button>
+        <button :class="{ on: tab === 'agent' }" @click="tab = 'agent'">AI 规划助手</button>
+      </div>
+      <ReportPanel v-if="tab === 'report'" :result="result" />
+      <AgentPanel v-if="tab === 'agent'" :center="center" @result="onAgentResult"
+                  @actions="onAgentActions" @pick="onAgentPick" />
+    </div>
   </main>
 </template>
 
 <script setup>
 import { ref } from 'vue'
+import AgentPanel from './components/AgentPanel.vue'
 import MapView from './components/MapView.vue'
 import ReportPanel from './components/ReportPanel.vue'
 
@@ -48,6 +57,8 @@ const running = ref(false)
 const elapsed = ref(0)
 const error = ref('')
 const result = ref(null)
+const tab = ref('report')
+const agentActions = ref([])
 
 function onPick(c) {
   center.value = c
@@ -58,10 +69,16 @@ function setCenterFromInput() {
   center.value = [lat.value, lng.value]
 }
 
+// 智能体的产出与手动体检共用同一套渲染：结果进地图与报告，指令进地图标注
+function onAgentResult(res) { result.value = res }
+function onAgentActions(actions) { agentActions.value = actions }
+function onAgentPick(c) { onPick(c) }
+
 async function run() {
   running.value = true
   error.value = ''
   result.value = null
+  agentActions.value = []
   elapsed.value = 0
   try {
     const res = await fetch(`${API}/api/analysis`, {
@@ -109,4 +126,11 @@ button:disabled { background: #b7c4d8; cursor: not-allowed; }
 .err { color: #d43b3b; font-size: 12px; margin-top: 8px; }
 .map { border-radius: 10px; overflow: hidden; box-shadow: 0 1px 4px rgba(20,36,61,.08); }
 .meta { font-size: 13px; line-height: 1.9; list-style: none; }
+.right { display: flex; flex-direction: column; }
+.right.flexed { overflow: hidden; }
+.right > *:not(.tabs) { flex: 1; min-height: 0; overflow-y: auto; }
+.right.flexed > *:not(.tabs) { overflow: hidden; }
+.tabs { display: flex; gap: 6px; margin-bottom: 12px; flex: none; }
+.tabs button { flex: 1; padding: 8px; background: #eef2fb; color: #4a5568; font-size: 13px; border-radius: 8px; }
+.tabs button.on { background: #2f6fed; color: #fff; }
 </style>

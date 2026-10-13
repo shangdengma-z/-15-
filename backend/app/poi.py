@@ -10,7 +10,8 @@ from .baidu_client import client
 from .config import CATEGORIES
 
 
-def _clean(rows: list, keywords_any: list) -> list:
+def clean_pois(rows: list, keywords_any: list) -> list:
+    """名称关键词白名单过滤 + 同名同坐标去重。"""
     out = []
     for r in rows:
         name = r.get("name", "") + r.get("type", "")
@@ -36,7 +37,7 @@ async def fetch_categories(center: tuple, radius: int = 3000) -> dict:
     async def one(cat_key: str, spec: dict):
         lists = await asyncio.gather(*(client.search_poi(q, center, radius) for q in spec["queries"]))
         raw = [r for rows in lists for r in rows]
-        return cat_key, _clean(raw, spec["keywords_any"])
+        return cat_key, clean_pois(raw, spec["keywords_any"])
 
     pairs = await asyncio.gather(*(one(k, v) for k, v in CATEGORIES.items()))
     return dict(pairs)

@@ -41,6 +41,7 @@ const requiredText = computed(() =>
 watch(() => props.result, async (res) => {
   if (!res) return
   await nextTick()
+  if (!barEl.value || !radarEl.value) return
   const cats = Object.values(res.coverage)
   echarts.init(barEl.value).setOption({
     grid: { left: 8, right: 8, top: 20, bottom: 8, containLabel: true },
@@ -61,7 +62,7 @@ watch(() => props.result, async (res) => {
       data: [{ value: cats.map(c => c.inside) }]
     }]
   })
-})
+}, { immediate: true })
 </script>
 
 <style scoped>

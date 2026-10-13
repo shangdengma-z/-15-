@@ -23,6 +23,12 @@ class Settings:
     walk_target_sec: int = field(default_factory=lambda: int(_env("ISOCHRONE_TARGET_SEC", "900")))
     city: str = field(default_factory=lambda: _env("SAMPLE_CITY", "北京市"))
 
+    # 规划智能体：OpenAI 兼容接口，默认对接 DeepSeek，换厂商只需改 BASE_URL/MODEL
+    llm_api_key: str = field(default_factory=lambda: _env("LLM_API_KEY"))
+    llm_base_url: str = field(default_factory=lambda: _env("LLM_BASE_URL", "https://api.deepseek.com"))
+    llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", "deepseek-chat"))
+    agent_max_steps: int = field(default_factory=lambda: int(_env("AGENT_MAX_STEPS", "4")))
+
 
 settings = Settings()
 
@@ -34,5 +40,12 @@ CATEGORIES = {
     "elderly": {"name": "养老", "queries": ["养老院", "社区养老", "日间照料"], "keywords_any": ["养老", "照料中心", "老年"]},
 }
 
-# 赛题要求的强制核验类别：菜市场 / 药店 / 小学
-REQUIRED_CATEGORIES = {"shopping_market": ("菜市场", 1000), "pharmacy": ("药店", 1000), "primary_school": ("小学", 1000)}
+# 赛题要求的强制核验类别：从大类检索结果中按名称关键词切出单品，不额外消耗配额
+REQUIRED_CATEGORIES = {
+    "shopping_market": {"name": "菜市场", "limit": 1000, "source": "shopping",
+                        "keywords": ["菜市场", "菜场", "农贸"]},
+    "pharmacy": {"name": "药店", "limit": 1000, "source": "medical",
+                 "keywords": ["药店", "药房"]},
+    "primary_school": {"name": "小学", "limit": 1000, "source": "education",
+                       "keywords": ["小学"]},
+}

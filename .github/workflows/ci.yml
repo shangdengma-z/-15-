@@ -17,6 +17,8 @@ jobs:
         run: |
           pip install ruff
           ruff check backend/app --select E,F,W --ignore E501
+      - name: Agent offline self-test (mock map + fake LLM)
+        run: python backend/tests/test_agent_offline.py
       - name: Smoke test (mock mode)
         env:
           BMAP_MOCK: '1'
