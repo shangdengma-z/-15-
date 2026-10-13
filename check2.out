@@ -1,0 +1,6 @@
+15min radii: [462, 489, 523, 543, 551, 556, 568, 580, 599, 601, 633, 639, 640, 663, 664, 684, 687, 696, 696, 700, 706, 740, 771, 830]
+POI: {'medical': 125, 'education': 78, 'shopping': 94, 'elderly': 26}
+medical names: ['昌乐福安大药店', '国大药房(绒线胡同店)', '初心大药房(大栅栏店)', '德寿堂药店', '百康药房(二龙路店)']
+coverage inside: {'medical': 2, 'education': 3, 'shopping': 11, 'elderly': 2}
+blindspots: 0 verified: 0
+score: 100 meta: {'elapsed_sec': 51.5, 'api_calls': 157, 'cache_hits': 26, 'degraded': True, 'required_check': {'菜市场': '步行1000m内必达', '药店': '步行1000m内必达', '小学': '步行1000m内必达'}}

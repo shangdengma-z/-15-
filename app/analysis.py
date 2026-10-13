@@ -91,6 +91,7 @@ def coverage_stats(pois: dict, ring15: list) -> dict:
 
 async def run_analysis(center: tuple) -> dict:
     t0 = time.monotonic()
+    client.reset_metrics()
     iso = await compute_isochrones(center)
     pois = await fetch_categories(center)
     ring15 = iso["rings"]["15"]
@@ -112,6 +113,8 @@ async def run_analysis(center: tuple) -> dict:
             "api_calls": client.calls,
             "cache_hits": client.cache_hits,
             "degraded": client.degraded,
+            "retry_count": client.retry_count,
+            "matrix_fallback": not client.matrix_ok,
             "required_check": {v[0]: f"步行{v[1]}m内必达" for v in REQUIRED_CATEGORIES.values()},
         },
     }

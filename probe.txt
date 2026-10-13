@@ -1,0 +1,4 @@
+walking status= 2 msg= 'Parameter Invalid' keys= ['status', 'message', 'info'] n_result= - routes= -
+place_v2 status= 0 msg= 'ok' keys= ['status', 'message', 'total', 'result_type', 'query_type', 'results'] n_result= - routes= -
+place_circle status= 0 msg= 'ok' keys= ['status', 'message', 'total', 'result_type', 'query_type', 'results'] n_result= - routes= -
+matrix EXC Expecting value: line 1 column 1 (char 0)
