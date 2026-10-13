@@ -1,6 +1,0 @@
-walk_v1+info NON-JSON http= 200 body= {"status":2,"message":"Parameter Invalid","info":{"copyright":{"text":"@2026 Baidu - Data","imageUrl":"http:\/\/api.map.
-walk_v1_coordtype NON-JSON http= 200 body= {"status":2,"message":"Parameter Invalid","info":{"copyright":{"text":"@2026 Baidu - Data","imageUrl":"http:\/\/api.map.
-walk_v2 NON-JSON http= 200 body= {"status":0,"message":"ok","info":{"copyright":{"text":"@2026 Baidu - Data","imageUrl":"http://api.map.baidu.com/images/
-matrix_dests NON-JSON http= 302 body= 
-matrix_dest_singe NON-JSON http= 302 body= 
-place total= 43 names= ['昌乐福安大药店', '同仁堂(大栅栏店)', '国大药房(绒线胡同店)', '初心大药房(大栅栏店)', '德寿堂药店']

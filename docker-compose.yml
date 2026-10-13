@@ -1,0 +1,21 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    volumes:
+      - ./data/cache:/srv/data/cache   # API 结果缓存持久化，重复演示零配额消耗
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_BMAP_AK: ${VITE_BMAP_AK:-}
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend

@@ -1,7 +1,0 @@
-15min ring radii (m): [1099, 1099, 1099, 1099, 1099, 1099, 1099, 1099, 1099, 1099, 1099, 1099, 1099, 1099, 1099, 1099, 1099, 1099, 1099, 1099, 1099, 1099, 1099, 1099]
-10min ring range: 749 - 750
-POI: {'medical': 125, 'education': 78, 'shopping': 94, 'elderly': 26}
-coverage inside: {'medical': 8, 'education': 12, 'shopping': 30, 'elderly': 3}
-blindspots: 0 verified: 0
-score: 100
-meta: {'elapsed_sec': 56.7, 'api_calls': 165, 'cache_hits': 26, 'degraded': True, 'required_check': {'菜市场': '步行1000m内必达', '药店': '步行1000m内必达', '小学': '步行1000m内必达'}}

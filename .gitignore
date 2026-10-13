@@ -1,0 +1,27 @@
+# 密钥，绝不提交
+.env
+frontend/.env.local
+frontend/.env
+
+# 会话导出记录，正文内含真实 AK/SK，严禁提交
+赛题要求与技术栈_*.md
+
+# 依赖与构建产物
+node_modules/
+frontend/dist/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# API 结果缓存（示例数据可另行导出提交）
+data/cache/
+
+# 联调时的临时探针输出
+*.out
+probe*.txt
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store

@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Lint (ruff)
+        run: |
+          pip install ruff
+          ruff check backend/app --select E,F,W --ignore E501
+      - name: Smoke test (mock mode)
+        env:
+          BMAP_MOCK: '1'
+          BMAP_QPS: '1000'
+        run: |
+          pip install -r backend/requirements.txt
+          timeout 20 uvicorn app.main:app --app-dir backend &
+          sleep 3
+          curl -sf http://localhost:8000/api/health | grep '"ok":true'
+          JOB=$(curl -sf -X POST http://localhost:8000/api/analysis -H 'Content-Type: application/json' -d '{"lat":39.908,"lng":116.397}' | python -c 'import sys,json;print(json.load(sys.stdin)["job_id"])')
+          sleep 2
+          curl -sf http://localhost:8000/api/analysis/$JOB | head -c 400
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Build
+        run: |
+          cd frontend
+          npm install
+          npm run build
