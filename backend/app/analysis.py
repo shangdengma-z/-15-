@@ -5,12 +5,11 @@ import math
 import time
 
 from .baidu_client import client, straight_line_m
-from .config import CATEGORIES, REQUIRED_CATEGORIES
+from .config import CATEGORIES, REQUIRED_CATEGORIES, settings
 from .isochrone import compute_isochrones, point_in_polygon
 from .poi import fetch_categories
 
 GRID_STEP_M = 300       # 盲区初筛网格步长
-MAX_CANDIDATES = 12     # 距离矩阵核验上限（控配额）
 
 
 def _grid_in_ring(ring: list) -> list:
@@ -63,7 +62,8 @@ async def identify_blindspots(ring15: list, pois: dict) -> list:
                                "missing_preview": preview,
                                "_missing_keys": missing, "_missing_req": missing_req})
     candidates.sort(key=lambda c: len(c["_missing_keys"]) + len(c["_missing_req"]), reverse=True)
-    verify = candidates[:MAX_CANDIDATES]
+    # 核验上限与每类比对半径数走配置：步行服务仅 3 QPS，这两个数是冷跑时长的主要旋钮
+    verify = candidates[:settings.max_candidates]
 
     # 核验：候选点到该类最近 5 个 POI 的真实步行距离必须也超限才判为盲区
     checked = []
@@ -74,7 +74,7 @@ async def identify_blindspots(ring15: list, pois: dict) -> list:
         tasks = []
         for name, limit, pool in specs:
             nearest = sorted(pool, key=lambda p: straight_line_m((cand["lng"], cand["lat"]),
-                                                                 (p["lng"], p["lat"])))[:5]
+                                                                 (p["lng"], p["lat"])))[:settings.verify_nearest]
             if nearest:
                 tasks.append(((name, limit),
                               client.distance_matrix([(cand["lat"], cand["lng"])],
@@ -89,7 +89,7 @@ async def identify_blindspots(ring15: list, pois: dict) -> list:
             checked.append({k: v for k, v in cand.items() if not k.startswith("_")}
                             | {"missing": confirmed, "verified": True})
     # 超出核验上限的候选只作"疑似"输出
-    for cand in candidates[MAX_CANDIDATES:]:
+    for cand in candidates[settings.max_candidates:]:
         checked.append({k: v for k, v in cand.items() if not k.startswith("_")} | {"verified": False})
     return checked
 
@@ -106,8 +106,8 @@ def coverage_stats(pois: dict, ring15: list) -> dict:
 async def run_analysis(center: tuple) -> dict:
     t0 = time.monotonic()
     client.reset_metrics()
-    iso = await compute_isochrones(center)
-    pois = await fetch_categories(center)
+    # 等时圈（步行 3 QPS）与 POI 检索（地点检索 30 QPS）互不依赖，并发跑可整段省掉 POI 排队时间
+    iso, pois = await asyncio.gather(compute_isochrones(center), fetch_categories(center))
     ring15 = iso["rings"]["15"]
     coverage = coverage_stats(pois, ring15)
     blindspots = await identify_blindspots(ring15, pois)

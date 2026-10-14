@@ -23,8 +23,16 @@ log = logging.getLogger("bmap")
 
 HOST = "https://api.map.baidu.com"
 
-# 4=频率超限, 10=每日配额超限, 401=同 AK 并发超限（实测并发 4 时约 15% 触发）：退避重试可恢复
+# 4=频率超限, 10=每日配额超限, 401=同一 AK 并发/突发超限（秒级窗口，快速重试即可恢复）
 RETRYABLE = {4, 10, 401}
+
+
+def _service_of(path: str) -> str:
+    """百度按服务分别限流（步行 3 QPS / 地点检索 30 QPS / 地理编码 10 QPS），故每服务独立配额。"""
+    for svc in ("direction", "distancematrix", "place", "geocoding"):
+        if f"/{svc}" in path:
+            return svc
+    return "direction"
 
 
 class BmapError(Exception):
@@ -56,8 +64,15 @@ class TokenBucket:
 
 class BmapClient:
     def __init__(self):
-        self.bucket = TokenBucket(settings.qps)
-        self.sem = asyncio.Semaphore(settings.concurrency)
+        # 每个服务一套「令牌桶 + 并发闸」：步行是硬瓶颈（3 QPS），地点检索可放开到 25 QPS
+        limits = {
+            "direction": (settings.qps, settings.concurrency),
+            "distancematrix": (settings.qps, settings.concurrency),
+            "place": (settings.place_qps, settings.place_concurrency),
+            "geocoding": (settings.geo_qps, settings.geo_concurrency),
+        }
+        self.buckets = {svc: TokenBucket(q) for svc, (q, _) in limits.items()}
+        self.sems = {svc: asyncio.Semaphore(c) for svc, (_, c) in limits.items()}
         self.cache_dir = Path(settings.cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.calls = 0          # 实际发起的 API 调用数（用于报告）
@@ -102,10 +117,11 @@ class BmapClient:
             return data
 
         full = self._sign(path, {"ak": settings.server_ak, "output": "json", **params})
+        svc = _service_of(path)
         last_err = None
-        for attempt in range(4):
-            async with self.sem:
-                await self.bucket.acquire()
+        for attempt in range(5):
+            async with self.sems[svc]:
+                await self.buckets[svc].acquire()
                 try:
                     resp = await self._http.get(HOST + path, params=full)
                     self.calls += 1
@@ -127,10 +143,10 @@ class BmapClient:
                 cache_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
                 return data
             if code in RETRYABLE:
-                # 限流/并发超限：退避重试；成功则不算降级，仅计入重试次数
+                # 限流/并发超限：百度按秒级窗口计，0.5s 起退避即可恢复；成功则不算降级，仅计入重试次数
                 last_err = BmapError(code, data.get("message", "qps limited"))
                 self.retry_count += 1
-                await asyncio.sleep(2 * (2**attempt) + random.random())  # 指数退避
+                await asyncio.sleep(0.5 * (2**attempt) + random.random() * 0.3)
                 continue
             raise BmapError(code, data.get("message", "unknown"))
         raise last_err or BmapError(-1, "retries exhausted")
