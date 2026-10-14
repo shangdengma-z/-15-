@@ -31,7 +31,7 @@ SYSTEM_PROMPT = """你是"15 分钟生活圈"社区体检与规划顾问，服�
 6. 不要输出 Markdown 表格和代码块。
 7. 面向的是非技术读者：回答中不要出现英文字段名、内部变量名或 JSON 键（如 blindspot_count），一律改用中文业务表述。"""
 
-_COORD = lambda name, desc: {"type": "number", "description": f"{desc}（{name}）"}  # noqa: E731
+_COORD = lambda name, desc: {"type": "number", "description": f"{desc}（{name}）"}
 
 TOOLS = [
     {"type": "function", "function": {
@@ -188,7 +188,7 @@ async def _dispatch(run: AgentRun, name: str, args: dict) -> dict:
         return await asyncio.wait_for(handler(run, **args), TOOL_TIMEOUT_SEC)
     except TypeError as e:          # 模型给错参数：把原因回填，让它自己纠正
         return {"error": f"参数不合法：{e}"}
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return {"error": f"工具 {name} 执行超时（>{TOOL_TIMEOUT_SEC}s）"}
     except (BmapError, KeyError, ValueError) as e:
         return {"error": f"工具 {name} 执行失败：{e}"}
@@ -239,7 +239,7 @@ async def _emit(on_step, payload: dict):
         return
     try:
         await on_step(payload)
-    except Exception:  # noqa: BLE001 - 进度回调失败只记日志
+    except Exception:
         log.warning("on_step 回调异常", exc_info=True)
 
 
@@ -295,9 +295,9 @@ def _rule_report(s: dict) -> str:
     zero = [k for k, v in cov.items() if v["inside_15min"] == 0]
     lines = [
         "【诊断结论】",
-        f"该点 15 分钟生活圈健康分 {s['health_score']}/100。基于真实路网的 15 分钟可达半径为 "
+        (f"该点 15 分钟生活圈健康分 {s['health_score']}/100。基于真实路网的 15 分钟可达半径为 "
         f"{r['min']}~{r['max']} 米（均值 {r['avg']} 米），明显偏离以直线距离估算的圆形范围，"
-        f"说明道路绕行、河流与主干道分割对可达性影响显著。",
+        f"说明道路绕行、河流与主干道分割对可达性影响显著。"),
     ]
     if zero:
         lines.append(f"圈内完全缺失的类别：{'、'.join(zero)}。")

@@ -1,0 +1,101 @@
+"""持久化 / 情景重算 / 三态判定离线自测：mock 地图 + 临时 SQLite，无需任何真实密钥或配额。
+
+覆盖：scene_key 就地更新、历史回放零出网、跨社区对比差值、累计统计、
+人群步速换算方向（老人可达面积必须小于成人）、顶点来源标签、证据指纹、
+检索查全判据与 Markdown 报告结构。CI 与本地均可直接运行：
+    python backend/tests/test_persistence_offline.py
+"""
+
+import asyncio
+import os
+import shutil
+import sys
+from pathlib import Path
+
+os.environ["BMAP_MOCK"] = "1"
+os.environ["BMAP_QPS"] = "1000"
+os.environ["BMAP_CONCURRENCY"] = "8"
+os.environ["BMAP_CACHE_DIR"] = "data/cache_selftest"
+os.environ["BMAP_DB_PATH"] = "data/db_selftest/lifestyle.db"
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from app import db
+from app.analysis import retrieval_completeness, run_analysis
+from app.config import settings
+from app.report import to_markdown
+
+CACHE = Path(settings.cache_dir)
+DBDIR = Path(settings.db_path).parent
+
+
+def check(name, cond, extra=""):
+    print(f"{'PASS' if cond else 'FAIL'}  {name} {extra}")
+    return bool(cond)
+
+
+async def main():
+    ok = True
+    if DBDIR.exists():
+        shutil.rmtree(DBDIR)
+
+    res = await run_analysis((40.0703, 116.3306))
+
+    # 1) 溯源字段齐备
+    ok &= check("data_mode 标注为 mock", res["meta"]["data_mode"] == "mock")
+    ok &= check("evidence_id 为 16 位十六进制", len(res["meta"]["evidence_id"]) == 16)
+    ok &= check("采样参数随结果下发", res["meta"]["sampling"]["rays"] == settings.rays)
+
+    # 2) 顶点标签：每环顶点数 == 射线数，且三类计数之和相等
+    sc = res["scenarios"]
+    kinds = sc["by_minutes"]["15min"]["vertex_kind"]
+    ok &= check("顶点标签计数守恒", sum(kinds.values()) == settings.rays, kinds)
+    ok &= check("15min 情景面积与主结果一致",
+                abs(sc["by_minutes"]["15min"]["area_km2"] - res["area_km2"]) < 0.02)
+
+    # 3) 人群换算方向：步速越慢可达面积越小（曾写反成老人更大）
+    areas = {k: v["area_km2"] for k, v in sc["by_crowd"].items()}
+    ok &= check("老人可达面积 < 成人", areas["elderly"] < areas["adult"], areas)
+    ok &= check("儿童介于老人与成人之间",
+                areas["elderly"] <= areas["child"] <= areas["adult"], areas)
+    ok &= check("情景重算零出网", sc["api_calls_for_scenarios"] == 0)
+
+    # 4) 检索查全判据：mock 全部探针应落在 complete/empty
+    comp = retrieval_completeness()
+    ok &= check("四类检索均判定为查全", all(v["complete"] for v in comp.values()), comp)
+
+    # 5) 持久化：同址重跑就地更新而不是新增行
+    rid = db.save_run(res, "测试社区", "测试形态")
+    res2 = await run_analysis((40.0703, 116.3306))
+    rid2 = db.save_run(res2, "测试社区", "测试形态")
+    ok &= check("同址重跑命中同一 scene_key", rid == rid2, rid2)
+    runs = db.list_runs()
+    ok &= check("历史只有一行且 run_count=2", len(runs) == 1 and runs[0]["run_count"] == 2,
+                [(r["id"], r["run_count"]) for r in runs])
+
+    # 6) 回放与对比
+    back = db.get_run(rid)
+    ok &= check("回放结果字段完整", back["health_score"] == res["health_score"]
+                and "rings" in back and "pois" in back)
+    db.save_run(res2 | {"center": {"lat": 39.9403, "lng": 116.4038}}, "对照社区", "对照")
+    cmp_ = db.compare([rid, db.scene_key((39.9403, 116.4038), "mock")])
+    ok &= check("对比返回两份与逐类别差值", len(cmp_["runs"]) == 2 and len(cmp_["diff"]) == 4)
+
+    # 7) 统计与报告
+    st = db.stats()
+    ok &= check("统计含社区数与配额单位", st["communities"] == 2 and "quota_units" in st, st["communities"])
+    md = to_markdown(back)
+    ok &= check("报告含计量/盲区/情景三节", all(k in md for k in ("计量自证", "服务盲区", "情景与人群对比")))
+    ok &= check("报告标注数据来源", "数据来源：**mock**" in md)
+
+    # 8) 删除
+    ok &= check("删除后历史为空", db.delete_run(rid) and not db.get_run(rid))
+
+    print("\n== 结果：", "全部通过 ==" if ok else "存在失败 ==")
+    return ok
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(0 if asyncio.run(main()) else 1)
+    finally:
+        shutil.rmtree(DBDIR, ignore_errors=True)

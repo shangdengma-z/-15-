@@ -22,6 +22,7 @@ class Settings:
     geo_qps: float = field(default_factory=lambda: float(_env("BMAP_GEO_QPS", "8")))
     geo_concurrency: int = field(default_factory=lambda: int(_env("BMAP_GEO_CONCURRENCY", "4")))
     cache_dir: str = field(default_factory=lambda: _env("BMAP_CACHE_DIR", "data/cache"))
+    db_path: str = field(default_factory=lambda: _env("BMAP_DB_PATH", "data/db/lifestyle.db"))
     mock: bool = field(default_factory=lambda: _env("BMAP_MOCK", "0") == "1")
     rays: int = field(default_factory=lambda: int(_env("ISOCHRONE_RAYS", "18")))
     sample_radii: str = field(default_factory=lambda: _env("ISOCHRONE_RADII", "300,600,1000,1500"))
@@ -56,3 +57,17 @@ REQUIRED_CATEGORIES = {
     "primary_school": {"name": "小学", "limit": 1000, "source": "education",
                        "keywords": ["小学"]},
 }
+
+# 典型社区预设：演示时一键切换不同城市形态，覆盖赛题要求的"城乡结合部/老旧小区"对照
+PRESET_COMMUNITIES = [
+    {"id": "huilongguan", "name": "回龙观居住区", "archetype": "城乡结合部大型居住区",
+     "lat": 40.0703, "lng": 116.3306},
+    {"id": "jiadaokou", "name": "交道口老城街区", "archetype": "中心城区老旧小区",
+     "lat": 39.9403, "lng": 116.4038},
+    {"id": "tiantongyuan", "name": "天通苑大区", "archetype": "超大型保障房社区",
+     "lat": 40.0748, "lng": 116.4180},
+    {"id": "wangjing", "name": "望京西区", "archetype": "城市新区综合社区",
+     "lat": 40.0010, "lng": 116.4700},
+    {"id": "guomao", "name": "国贸中心区", "archetype": "高密度商务中心",
+     "lat": 39.9087, "lng": 116.4560},
+]

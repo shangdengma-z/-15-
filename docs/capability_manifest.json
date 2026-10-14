@@ -1,0 +1,61 @@
+{
+  "generated_at": "2026-10-14",
+  "purpose": "把『百度开放能力里哪些能用、哪些不能用、为什么不用』写成可核查的清单，避免评审现场被问住，也避免后人重复踩坑",
+  "services": {
+    "direction_walking_v2": {
+      "endpoint": "/direction/v2/walking/",
+      "status": "可用",
+      "quota": "3 QPS / 5000 次每天（个人认证 AK 实测告警短信）",
+      "notes": "v1 对当前 AK 报 Parameter Invalid，统一 v2；duration 单位为秒",
+      "evidence": "backend/app/baidu_client.py walking_route()"
+    },
+    "distancematrix_walking": {
+      "endpoint": "/distancematrix/v1/walking/",
+      "status": "可用（需单独开通；未开通时 302 到 error.html）",
+      "quota": "按 origins×destinations 路线对数折算，与 HTTP 次数分栏",
+      "notes": "未开通时自动熔断并降级为并发路线规划，结论口径不变",
+      "evidence": "backend/app/baidu_client.py distance_matrix()"
+    },
+    "place_search": {
+      "endpoint": "/place/v2/search",
+      "status": "可用",
+      "quota": "30 QPS / 10000 次每天",
+      "notes": "列表字段是 results；page_size 请求 30/50 时实测只回 20 条（同赛道实现 nghqqa/evergreen 的实测结论，本项目按实测页容量做查全判据）",
+      "evidence": "backend/app/baidu_client.py search_poi() 的 stop_reason 登记"
+    },
+    "geocoding_v3": {
+      "endpoint": "/geocoding/v3/ 与 /reverse_geocoding/v3/",
+      "status": "可用",
+      "quota": "10 QPS",
+      "notes": "逆地理编码只到街道/商圈级，不能确认选点落在某个具体小区内部",
+      "evidence": "backend/app/baidu_client.py geocode()/regeo()"
+    },
+    "isochrone_official": {
+      "endpoint": "无面向公众的步行等时圈 REST 服务",
+      "status": "不可用",
+      "notes": "百度开放平台公开文档无步行等时圈接口；货运等时圈 /logistics_truck/v1/isochrone 在同赛道实现 yklg/evergreen-circle 的探测中返回 status=240（未开通，需商务授权）。本项目未重复探测，直接自建扇形采样等时圈",
+      "evidence": "docs/技术设计文档.md §3.1；同赛道仓库 capability 注释",
+      "decision": "自建等时圈不是遗漏，是前提；换成厂商接口等于把 30% 得分点交还厂商"
+    },
+    "traffic_around": {
+      "endpoint": "/traffic/v1/around",
+      "status": "未接入",
+      "notes": "同赛道实现将其作为第五维路况暴露度（权重 0.15）；本项目两天工期下不引入新口径，避免『缺源退回原比例』的归一化埋雷",
+      "decision": "有意不接，登记为后续工作"
+    }
+  },
+  "behaviour_facts": [
+    {
+      "fact": "步行测时是确定性几何函数：同参数跨时段重复调用结果逐位相同（同赛道 40/40 点、跨 6 天实测）",
+      "implication": "缓存键不需要带时间维度；重复演示零配额是安全的"
+    },
+    {
+      "fact": "status=401 是同一 AK 的秒级并发/突发超限，0.5s 起退避即可恢复；status=10 是日配额耗尽，重试到明天才有意义",
+      "implication": "401 走退避重试，10 走熔断到进程结束，两者处置不同"
+    },
+    {
+      "fact": "百度对未知查询参数静默忽略（probe_deadbeef 对照实验，同赛道）",
+      "implication": "阴性结论只能说『未观察到差异』，不能说『没有影响』"
+    }
+  ]
+}

@@ -6,6 +6,7 @@ services:
     env_file: .env
     volumes:
       - ./data/cache:/srv/data/cache   # API 结果缓存持久化，重复演示零配额消耗
+      - ./data/db:/srv/data/db         # 体检历史库（SQLite），重启容器后历史与对比仍可复现
     ports:
       - "8000:8000"
 

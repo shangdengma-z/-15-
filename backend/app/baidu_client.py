@@ -28,10 +28,14 @@ RETRYABLE = {4, 10, 401}
 
 
 def _service_of(path: str) -> str:
-    """百度按服务分别限流（步行 3 QPS / 地点检索 30 QPS / 地理编码 10 QPS），故每服务独立配额。"""
-    for svc in ("direction", "distancematrix", "place", "geocoding"):
-        if f"/{svc}" in path:
-            return svc
+    """百度按服务分别限流（步行 3 QPS / 地点检索 30 QPS / 地理编码 10 QPS），故每服务独立配额。
+    注意用子串而非 "/geocoding"：正/逆地理编码共用同一个地理编码配额池。"""
+    if "distancematrix" in path:
+        return "distancematrix"
+    if "place" in path:
+        return "place"
+    if "geocoding" in path:
+        return "geocoding"
     return "direction"
 
 
@@ -77,15 +81,22 @@ class BmapClient:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.calls = 0          # 实际发起的 API 调用数（用于报告）
         self.cache_hits = 0
+        self.quota_units = 0    # 折算配额单位：批量矩阵按「路线对数」计费，与 HTTP 请求数分栏不合并
+        self.by_service = {}    # 每服务真实出网次数，供 /api/stats 与响应头自证计量
+        self.place_probes = []  # 每次检索的停止原因，用于把"没查到"和"没有"区分开
         self.degraded = False   # 仅当真正直线兜底时置位（数据质量降级）
         self.retry_count = 0    # 限流退避重试次数（最终成功则不影响数据质量）
         self.matrix_ok = True   # 距离矩阵服务可用性开关
+        self.quota_exhausted = False  # 日配额耗尽熔断：置位后不再出网，只走缓存
         self._http = httpx.AsyncClient(timeout=10, follow_redirects=False)
 
     def reset_metrics(self):
         """每次体检任务开始时清零，使 meta 指标反映本轮真实情况（而非进程累积）。"""
         self.calls = 0
         self.cache_hits = 0
+        self.quota_units = 0
+        self.by_service = {}
+        self.place_probes = []
         self.degraded = False
         self.retry_count = 0
         self.matrix_ok = True
@@ -105,7 +116,7 @@ class BmapClient:
         sn = hashlib.md5(f"{path}?{query}{settings.server_sk}".encode()).hexdigest()
         return {**params, "sn": sn}
 
-    async def get(self, path: str, params: dict) -> dict:
+    async def get(self, path: str, params: dict, quota: int = 1) -> dict:
         cache_file = self._cache_path(path, params)
         if cache_file.exists():
             self.cache_hits += 1
@@ -116,6 +127,10 @@ class BmapClient:
             cache_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
             return data
 
+        if self.quota_exhausted:
+            # 日配额已耗尽：不再出网烧请求，直接由上层降级处理（演示现场的保护阀）
+            raise BmapError(10, "daily quota exhausted, cached responses only")
+
         full = self._sign(path, {"ak": settings.server_ak, "output": "json", **params})
         svc = _service_of(path)
         last_err = None
@@ -125,6 +140,8 @@ class BmapClient:
                 try:
                     resp = await self._http.get(HOST + path, params=full)
                     self.calls += 1
+                    self.quota_units += quota
+                    self.by_service[svc] = self.by_service.get(svc, 0) + 1
                     try:
                         data = resp.json()
                     except ValueError:
@@ -142,6 +159,10 @@ class BmapClient:
             if code == 0:
                 cache_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
                 return data
+            if code == 10:
+                # 每日配额超限：重试到明天才有意义，熔断到进程重启为止，避免反复报错烧额度
+                self.quota_exhausted = True
+                raise BmapError(code, data.get("message", "daily quota exhausted"))
             if code in RETRYABLE:
                 # 限流/并发超限：百度按秒级窗口计，0.5s 起退避即可恢复；成功则不算降级，仅计入重试次数
                 last_err = BmapError(code, data.get("message", "qps limited"))
@@ -178,7 +199,7 @@ class BmapClient:
                 data = await self.get("/distancematrix/v1/walking/", {
                     "origins": ";".join(f"{a},{b}" for a, b in origins),
                     "destinations": ";".join(f"{a},{b}" for a, b in destinations),
-                })
+                }, quota=len(origins) * len(destinations))  # 矩阵按「路线对数」折配额，不是按 HTTP 次数
                 return [[float(e["distance"]) for e in el["distances"]]
                         for el in data["result"]["elements"]]
             except (BmapError, KeyError):
@@ -188,31 +209,60 @@ class BmapClient:
         return [[m for m, _ in row] for row in rows]
 
     async def search_poi(self, query: str, center: tuple, radius: int = 3000) -> list:
-        """圆形区域 POI 检索（place/v2/search），自动翻页，按 uid 去重。"""
+        """圆形区域 POI 检索（place/v2/search），自动翻页，按 uid 去重。
+
+        同时登记「这一圈为什么停了」：判"1km 内没有药店"是一个全称否定，只有查全了才成立。
+        实测 place/v2/search 会把 page_size 静默压到 20（请求 30/50 时 status=0 也只回 20 条），
+        所以短页判据必须按实测页容量比，不能按请求值。
+        """
         path = "/place/v2/search"
-        seen, out, page = set(), [], 0
-        while page < 3:  # 每类每关键词最多取 60 条，足够生活圈尺度
+        seen, out, page, stop = set(), [], 0, "page_cap"
+        page_capacity = 0
+        while page < 3:
             data = await self.get(path, {
                 "query": query, "location": f"{center[0]},{center[1]}",
                 "radius": radius, "page_size": 20, "page_num": page,
             })
             results = data.get("results", [])
+            page_capacity = max(page_capacity, len(results))
             if not results:
+                stop = "empty" if page == 0 else "complete"
                 break
+            before = len(out)
             for r in results:
                 if r.get("uid") not in seen:
                     seen.add(r.get("uid"))
                     out.append(r)
+            if len(out) == before and page > 0:
+                stop = "dup_stop"
+                break
             total = data.get("total", len(out))
             if len(out) >= total or len(results) < 20:
+                stop = "complete"
                 break
             page += 1
+        self.place_probes.append({"query": query, "pages": page + 1, "raw": page_capacity and len(out),
+                                  "count": len(out), "stop": stop})
         return out
 
     async def geocode(self, address: str) -> tuple:
         data = await self.get("/geocoding/v3/", {"address": address, "city": settings.city})
         loc = data["result"]["location"]
         return (loc["lat"], loc["lng"])
+
+    async def regeo(self, point: tuple) -> dict:
+        """逆地理编码：给体检记录一个人类可读的社区名（1 次调用，进缓存后零成本）。"""
+        try:
+            data = await self.get("/reverse_geocoding/v3/", {
+                "coordtype": "bd09ll", "location": f"{point[0]},{point[1]}"})
+            r = data.get("result", {})
+            comp = r.get("addressComponent", {})
+            return {"address": r.get("formatted_address", ""),
+                    "district": comp.get("district", ""), "town": comp.get("town", ""),
+                    "street": comp.get("street", "")}
+        except (BmapError, KeyError, IndexError, TypeError) as e:
+            log.info("regeo unavailable: %s", e)
+            return {}
 
     # ---- Mock：无 AK 也能跑通全链路，用于开发与演示回放 ----
 
@@ -237,6 +287,10 @@ class BmapClient:
                  "location": {"lat": lat + random.uniform(-0.015, 0.015),
                               "lng": lng + random.uniform(-0.017, 0.017)},
                  "address": "模拟地址"} for i in range(n)]}
+        if "reverse_geocoding" in path:
+            lat, lng = map(float, params["location"].split(","))
+            return {"status": 0, "result": {"formatted_address": f"模拟市示例区 {lat:.4f},{lng:.4f}",
+                    "addressComponent": {"district": "示例区", "town": "示例街道", "street": "示例路"}}}
         if "geocoding" in path:
             return {"status": 0, "result": {"location": {"lat": 39.908, "lng": 116.397}}}
         return {"status": 0, "result": []}

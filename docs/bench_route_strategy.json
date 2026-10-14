@@ -1,0 +1,34 @@
+{
+  "generated_at": "2026-10-14 18:01",
+  "mode": "mock 计数 + 3 QPS 建模耗时（不消耗真实配额；请求数与配额单位在真实环境下同构）",
+  "pairs": 24,
+  "origins": 8,
+  "destinations": 3,
+  "qps_model": 3.0,
+  "serial": {
+    "http_requests": 24,
+    "quota_units": 24,
+    "mock_wall_sec": 0.009,
+    "modeled_wall_sec_at_qps": 8.0
+  },
+  "batch": {
+    "http_requests": 1,
+    "quota_units": 24,
+    "mock_wall_sec": 0.0,
+    "modeled_wall_sec_at_qps": 0.33
+  },
+  "quota_units_identical": true,
+  "round_trip_saving": 24.0,
+  "budget_experiment": {
+    "request_budget": 20,
+    "serial_pairs_covered": 20,
+    "batch_pairs_covered": 24,
+    "serial_coverage": 0.833,
+    "batch_coverage": 1.0,
+    "conclusion": "批量省的是往返不是配额：配额单位两种打法完全相同，但在固定请求预算下批量能覆盖全部候选，逐条会先撞预算"
+  },
+  "notes": [
+    "distancematrix 的 quota 按 origins×destinations 计，与 HTTP 次数分栏上报，永不合并",
+    "真实环境下串行还受 3 QPS 令牌桶约束：24 对逐条至少 8 秒，批量 1 次请求约 0.33 秒"
+  ]
+}

@@ -22,19 +22,60 @@ def dest_on_ray(center: tuple, bearing_deg: float, radius_m: float) -> tuple:
 
 
 def _interp_threshold(times: list, radii: list, target_sec: float):
-    """在单条射线上插值耗时=target 的半径；全程小于/大于 target 时给端点估计。"""
+    """在单条射线上插值耗时=target 的半径；全程小于/大于 target 时给端点估计。
+
+    同时返回顶点来源标签，供前端按置信度着色（实测 / 内插 / 外推），
+    外推点是把「没测到」和「测得出」区分开的唯一办法。
+    """
     pairs = sorted(zip(radii, times))
     prev_r, prev_t = None, None
     for r, t in pairs:
         if prev_t is not None and prev_t <= target_sec <= t:
             if t == prev_t:
-                return r
+                return r, "measured"
             ratio = (target_sec - prev_t) / (t - prev_t)
-            return prev_r + (r - prev_r) * ratio
+            return prev_r + (r - prev_r) * ratio, "interpolated"
         prev_r, prev_t = r, t
     if times and max(times) < target_sec:
-        return radii[-1] * 1.15  # 宽松截断，避免射线冲出远郊
-    return radii[0] * (target_sec / max(times[0], 1)) if times else 0
+        return radii[-1] * 1.15, "extrapolated"  # 宽松截断，避免射线冲出远郊
+    if times:
+        return radii[0] * (target_sec / max(times[0], 1)), "extrapolated"
+    return 0, "unknown"
+
+
+def ring_from_series(series: list, center: tuple, target_sec: float,
+                     smooth: bool = False) -> dict:
+    """由已采样的「方位角-半径-耗时」序列重新生成某一阈值的等时圈，零额外 API 调用。
+
+    这是 5/10/15/20 分钟情景对比与人群步速换算共用的一条路：原始耗时留在结果里，
+    换阈值只是换一次插值，不需要再打路网接口。
+    """
+    raw, kinds = [], []
+    for item in series:
+        r, kind = _interp_threshold(item["times"], item["radii"], target_sec)
+        raw.append(dest_on_ray(center, item["bearing"], max(r, 50)))
+        kinds.append(kind)
+    pts = smooth_polygon(raw) if smooth else raw
+    return {"ring": [[round(lng, 6), round(lat, 6)] for lat, lng in pts],
+            "vertex_kind": kinds,
+            "radius_m": [round(math.hypot((lat - center[0]) * 111320,
+                                          (lng - center[1]) * 111320 *
+                                          math.cos(math.radians(center[0]))))
+                         for lat, lng in pts]}
+
+
+def polygon_area_km2(ring: list) -> float:
+    """鞋带公式 + 中位纬度校正，返回平方公里。"""
+    if len(ring) < 3:
+        return 0.0
+    mid_lat = sum(p[1] for p in ring) / len(ring)
+    kx = 111.320 * math.cos(math.radians(mid_lat))   # 1 度经度 ≈ km
+    ky = 111.320                                     # 1 度纬度 ≈ km
+    s = 0.0
+    for i, (x1, y1) in enumerate(ring):
+        x2, y2 = ring[(i + 1) % len(ring)]
+        s += (x1 * kx) * (y2 * ky) - (x2 * kx) * (y1 * ky)
+    return round(abs(s) / 2, 3)
 
 
 def smooth_polygon(points: list, iterations: int = 2) -> list:
@@ -50,7 +91,8 @@ def smooth_polygon(points: list, iterations: int = 2) -> list:
 
 
 async def compute_isochrones(center: tuple) -> dict:
-    """返回 {rings: {5/10/15分钟: [lng,lat]...}, heat: [{lng,lat,t_sec}...]}。"""
+    """返回 {rings, heat, series}。series 是每条射线的「半径-实测耗时」原始序列，
+    留着它就能在不打路网接口的前提下重算任意时间阈值（情景对比 / 人群步速）。"""
     n_rays = settings.rays
     radii = [int(x) for x in settings.sample_radii.split(",")]
     bearings = [i * 360.0 / n_rays for i in range(n_rays)]
@@ -59,26 +101,23 @@ async def compute_isochrones(center: tuple) -> dict:
         row = []
         for r in radii:
             dest = dest_on_ray(center, bearings[ray_i], r)
-            t = await client.walking_duration(center, dest)
-            row.append((dest, t))
+            meters, sec = await client.walking_route(center, dest)
+            row.append((dest, sec, meters))
         return row
 
     results = await asyncio.gather(*(probe(i) for i in range(n_rays)))
 
-    heat = [{"lng": round(p[1], 6), "lat": round(p[0], 6), "t": round(t)}
-            for row in results for p, t in row]
+    heat = [{"lng": round(p[1], 6), "lat": round(p[0], 6), "t": round(t), "d": round(d)}
+            for row in results for p, t, d in row]
+    series = [{"bearing": round(b, 2), "radii": radii,
+               "times": [round(t, 1) for _, t, _ in row],
+               "distances": [round(d) for _, _, d in row]}
+              for b, row in zip(bearings, results)]
 
     rings = {}
-    targets = {"5": 300, "10": 600, "15": settings.walk_target_sec}
-    for label, target in targets.items():
-        raw = []
-        for i, row in enumerate(results):
-            times = [t for _, t in row]
-            r = _interp_threshold(times, radii, target)
-            raw.append(dest_on_ray(center, bearings[i], max(r, 50)))
-        ring = smooth_polygon(raw) if label == "15" else raw
-        rings[label] = [[round(lng, 6), round(lat, 6)] for lat, lng in ring]
-    return {"rings": rings, "heat": heat}
+    for label, target in {"5": 300, "10": 600, "15": settings.walk_target_sec}.items():
+        rings[label] = ring_from_series(series, center, target, smooth=label == "15")["ring"]
+    return {"rings": rings, "heat": heat, "series": series, "sample_radii": radii}
 
 
 def point_in_polygon(pt: tuple, polygon: list) -> bool:

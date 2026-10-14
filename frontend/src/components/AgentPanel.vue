@@ -1,8 +1,8 @@
 <template>
   <div class="agent">
     <div class="head">
-      <h3>AI 规划助手</h3>
-      <span class="mode" :class="{ off: !llmReady }">{{ llmReady ? '智能体模式' : '规则模式' }}</span>
+      <span class="mode" :class="{ off: !llmReady }"><i></i>{{ llmReady ? '智能体模式' : '规则模式' }}</span>
+      <span class="sub">大模型自主编排 5 个地图工具 · 轨迹落库可回放</span>
     </div>
     <p class="tip">
       用自然语言提问，助手会自主决定调用哪些地图能力（地名解析、等时圈体检、真实步行测距、POI 检索），
@@ -163,35 +163,42 @@ async function poll(jobId) {
 </script>
 
 <style scoped>
-.agent { display: flex; flex-direction: column; height: 100%; }
-.head { display: flex; align-items: center; gap: 8px; }
-.head h3 { font-size: 14px; }
-.mode { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: #e6f7ee; color: #17b26a; }
-.mode.off { background: #fff4e5; color: #f5a623; }
-.tip { font-size: 12px; color: #7a8699; line-height: 1.7; margin: 6px 0 10px; }
-.presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
-.chip { width: auto; padding: 5px 10px; font-size: 12px; background: #eef2fb; color: #2f6fed; border-radius: 14px; }
-.chip:disabled { background: #f1f3f7; color: #b7c4d8; }
-.msgs { flex: 1; overflow-y: auto; padding-right: 4px; }
+.agent { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.mode { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; padding: 4px 10px;
+  border-radius: 999px; background: #e4f7ee; color: #0d7a49; font-weight: 600; }
+.mode i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.mode.off { background: #fff3e2; color: #9a5b00; }
+.sub { font-size: 10.5px; color: var(--muted); }
+.tip { font-size: 11px; color: var(--muted); line-height: 1.7; margin: 0 0 10px; }
+.presets { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.chip { width: 100%; padding: 8px 11px; font-size: 11.5px; text-align: left; border-radius: 11px;
+  background: #f7f9fd; border: 1px solid var(--line); color: var(--text); box-shadow: none;
+  transition: border-color .15s, transform .15s, background .15s; }
+.chip:hover:not(:disabled) { border-color: #b9cffb; background: #f2f7ff; transform: translateX(2px); }
+.chip:disabled { color: #b7c4d8; }
+.msgs { flex: 1; min-height: 0; overflow-y: auto; padding-right: 4px; }
 .msg { margin-bottom: 10px; }
 .msg.user { text-align: right; }
-.bubble { display: inline-block; text-align: left; max-width: 100%; padding: 8px 10px; border-radius: 8px;
-          background: #f3f5f9; font-size: 13px; line-height: 1.75; }
-.msg.user .bubble { background: #2f6fed; color: #fff; }
+.bubble { display: inline-block; text-align: left; max-width: 100%; padding: 10px 12px; border-radius: 14px;
+  background: #f4f7fb; border: 1px solid var(--line); font-size: 12.5px; line-height: 1.75; color: var(--text); }
+.msg.user .bubble { background: linear-gradient(135deg, #2f6fed, #6d5efc); color: #fff; border: none;
+  box-shadow: 0 6px 16px rgba(47, 111, 237, .25); }
 .text { white-space: pre-wrap; }
-.steps { border-left: 2px solid #d5dbe5; padding-left: 8px; margin-bottom: 8px; }
-.steps-title { font-size: 11px; color: #7a8699; margin-bottom: 4px; }
-.step { font-size: 11px; line-height: 1.8; color: #4a5568; }
-.step .ico { color: #17b26a; margin-right: 4px; }
-.step.bad .ico { color: #d43b3b; }
-.step .tname { color: #1f2733; font-weight: 600; margin-right: 4px; }
-.step .tsum { color: #7a8699; }
-.step.running .ico { color: #2f6fed; display: inline-block; animation: spin 1.1s linear infinite; }
+.steps { border-left: 2px solid #dfe6f2; padding-left: 9px; margin-bottom: 8px; }
+.steps-title { font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted);
+  margin-bottom: 5px; font-weight: 600; }
+.step { font-size: 11px; line-height: 1.85; color: #56657f; }
+.step .ico { color: var(--good); margin-right: 5px; }
+.step.bad .ico { color: var(--bad); }
+.step .tname { color: var(--ink); font-weight: 600; margin-right: 5px; }
+.step .tsum { color: var(--muted); }
+.step.running .ico { color: var(--brand); display: inline-block; animation: spin 1.1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.note { font-size: 11px; color: #f5a623; margin-top: 6px; }
-.empty { color: #aab3c2; font-size: 12px; text-align: center; padding: 30px 0; }
-.input { display: flex; gap: 6px; margin-top: 10px; }
-.input textarea { flex: 1; padding: 7px 8px; border: 1px solid #d5dbe5; border-radius: 6px;
-                  font-size: 13px; font-family: inherit; resize: none; }
-.input button { width: 84px; flex: none; font-size: 13px; padding: 0; }
+.note { font-size: 10.5px; color: #9a5b00; margin-top: 7px; padding-top: 6px;
+  border-top: 1px dashed #f0d9ae; }
+.empty { color: #b3bfd0; font-size: 11.5px; text-align: center; padding: 34px 0; }
+.input { display: flex; gap: 8px; margin-top: 10px; align-items: stretch; }
+.input textarea { flex: 1; padding: 9px 11px; border-radius: 12px; font-size: 12.5px; resize: none; }
+.input button { width: 88px; flex: none; font-size: 13px; padding: 0; }
 </style>

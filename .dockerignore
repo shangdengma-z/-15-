@@ -16,8 +16,9 @@ frontend/node_modules
 node_modules
 frontend/dist
 
-# 缓存与演示素材不需要进镜像（缓存通过 volume 挂载）
+# 缓存与演示素材不需要进镜像（缓存/历史库通过 volume 挂载）
 data/cache
+data/db
 data/sample
 赛题要求与技术栈_*.md
 *.pdf

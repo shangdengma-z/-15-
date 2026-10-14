@@ -17,6 +17,14 @@ venv/
 # API 结果缓存（示例数据可另行导出提交）
 data/cache/
 
+# 体检历史库（SQLite，含本机演示产生的派生结果，不入库以免误传）
+data/db/
+
+# 离线自测的临时缓存与临时库
+data/cache_selftest/
+data/db_selftest/
+backend/data/
+
 # 联调时的临时探针输出
 *.out
 probe*.txt

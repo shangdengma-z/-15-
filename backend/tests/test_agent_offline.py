@@ -19,10 +19,10 @@ os.environ["BMAP_CACHE_DIR"] = "data/cache_selftest"
 os.environ["LLM_API_KEY"] = ""
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import agent as A  # noqa: E402
-from app.agent import run_agent  # noqa: E402
-from app.config import settings  # noqa: E402
-from app.llm import LLMError, llm  # noqa: E402
+from app import agent as A
+from app.agent import run_agent
+from app.config import settings
+from app.llm import LLMError, llm
 
 PROGRESS = []
 
