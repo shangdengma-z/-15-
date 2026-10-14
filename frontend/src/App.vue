@@ -2,6 +2,9 @@
   <header class="bar">
     <h1>15 分钟生活圈智能体检与规划助手</h1>
     <span class="sub">百度地图开放能力 · 真实路网等时圈 · 服务盲区诊断</span>
+    <span v-if="mockMode" class="mocktag" title="数据由本地 Mock 生成，仅用于无密钥演示与自动化测试">
+      ⚠ Mock 演示模式 · 数据为本地合成，非真实路网
+    </span>
   </header>
   <main class="layout">
     <aside class="panel side">
@@ -44,7 +47,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import AgentPanel from './components/AgentPanel.vue'
 import MapView from './components/MapView.vue'
 import ReportPanel from './components/ReportPanel.vue'
@@ -59,6 +62,15 @@ const error = ref('')
 const result = ref(null)
 const tab = ref('report')
 const agentActions = ref([])
+const mockMode = ref(false)
+
+// Mock 模式下界面与真实数据完全同形，必须显式标注，避免演示/评审时误把合成数据当真实结果
+onMounted(async () => {
+  try {
+    const h = await (await fetch(`${API}/api/health`)).json()
+    mockMode.value = !!h.mock
+  } catch (e) { /* 后端未就绪时不显示提示 */ }
+})
 
 function onPick(c) {
   center.value = c
@@ -113,6 +125,8 @@ body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; background: #f
 .bar { display: flex; align-items: baseline; gap: 16px; padding: 14px 24px; background: #14243d; color: #fff; }
 .bar h1 { font-size: 18px; font-weight: 600; }
 .bar .sub { font-size: 12px; opacity: .7; }
+.mocktag { margin-left: auto; flex: none; font-size: 12px; padding: 4px 10px; border-radius: 12px;
+           background: #fff4e5; color: #8a5200; border: 1px solid #f5a623; }
 .layout { display: grid; grid-template-columns: 300px 1fr 340px; gap: 12px; padding: 12px 24px; height: calc(100vh - 60px); }
 .panel { background: #fff; border-radius: 10px; padding: 16px; overflow-y: auto; box-shadow: 0 1px 4px rgba(20,36,61,.08); }
 .side section { margin-bottom: 18px; }

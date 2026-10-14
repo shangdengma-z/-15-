@@ -6,6 +6,18 @@
 
 > 赛题：【开源 AI 工具赛道】基于地图开放能力的"15 分钟生活圈"智能体检与规划助手
 
+## 30 秒跑通（不需要任何密钥）
+
+```bash
+bash scripts/demo.sh          # Windows PowerShell:  .\scripts\demo.ps1
+# 或
+docker compose up --build
+```
+
+脚本会自动装依赖、以 **Mock 模式**（`BMAP_MOCK=1`）启动后端，不消耗任何百度配额、不需要 AK/SK，
+打开 http://localhost:5173 即可点选社区、生成等时圈与盲区报告、使用 AI 规划助手（规则模式）。
+要接**真实路网**数据：`cp .env.example .env` 填入 `BMAP_SERVER_AK` 后正常启动即可。
+
 ## 功能演示
 
 1. 点击地图选取社区中心点（或输入坐标）
@@ -19,16 +31,17 @@
 ## 核心技术设计
 
 ### 等时圈算法（扇形采样 + 射线插值）
-百度未提供等时圈 API。本方案从中心点向 `ISOCHRONE_RAYS`（默认 24）个方位发射射线，
-每条射线在 `300~1800m` 的 6 个半径上调用**步行路径规划 REST API** 获取真实路网耗时
-（红绿灯、天桥、围挡均计入），再沿射线对"耗时-半径"序列线性插值得到 5/10/15 分钟边界点，
-多边形顶点邻域平滑后输出。总调用量可预期（144 次），且每个采样点同时服务于三层等时圈与
-热力图，配合磁盘缓存使重复演示零配额消耗。
+百度未提供等时圈 API。本方案从中心点向 `ISOCHRONE_RAYS`（默认 18）个方位发射射线，
+每条射线在 `ISOCHRONE_RADII`（默认 300/600/1000/1500m）四个半径上调用**步行路径规划 REST API**
+获取真实路网耗时（红绿灯、天桥、围挡均计入），再沿射线对"耗时-半径"序列线性插值得到
+5/10/15 分钟边界点，多边形顶点邻域平滑后输出。总调用量可预期（72 次），且每个采样点同时服务于
+三层等时圈与热力图，配合磁盘缓存使重复演示零配额消耗。精度优先可回退到 24 射线 × 6 半径。
 
 ### 服务盲区识别（两阶段）
 1. **初筛**：在 15 分钟圈内铺设 300m 网格，直线距离粗筛"1km 内缺乏某类设施"的候选点；
-2. **核验**：候选点经**批量步行距离矩阵**（`/distancematrix/v1/walking/`）到该类最近 5 个
-   POI 的真实步行距离复核，剔除直线误报（如河桥绕行），保证报告可信；
+2. **核验**：候选点经**批量步行距离矩阵**（`/distancematrix/v1/walking/`）到该类最近
+   `BLINDSPOT_VERIFY_NEAREST`（默认 3）个 POI 的真实步行距离复核，剔除直线误报（如河桥绕行），
+   保证报告可信；
 3. **必核单品**：除医疗/教育/购物/养老四大类外，按赛题字面要求把**菜市场、药店、小学**
    三个单品单独纳入盲区判定（从大类检索结果按名称关键词切分，不额外消耗配额），
    避免"有便利店但无菜市场"这类漏判。
@@ -76,6 +89,10 @@
    ```bash
    cp .env.example .env   # 编辑 .env 填入 AK/SK
    ```
+   - 用 **Docker 部署**：三把密钥（`BMAP_SERVER_AK`、`VITE_BMAP_AK`、`LLM_API_KEY`）都写在根目录 `.env` 里，
+     `docker compose` 会用它做变量插值并把浏览器端 AK 注入前端构建产物。
+   - 用 **本地 npm 开发**：前端 AK 另放 `frontend/.env.local`（`cp frontend/.env.example frontend/.env.local`），
+     Vite 只读该文件。
 3. （可选）规划智能体：在 `.env` 填 `LLM_API_KEY`（OpenAI 兼容接口，默认 DeepSeek）。
    留空则 AI 面板自动运行在规则模式，其余功能不受影响。
 
@@ -84,6 +101,13 @@
 docker compose up --build
 # 前端 http://localhost:5173  后端 http://localhost:8000/docs
 ```
+
+> 国内网络下若 `--build` 卡在拉取基础镜像（buildkit 不继承 Docker Desktop 的代理设置），
+> 先手动把三个基础镜像拉下来再构建即可绕过：
+> ```bash
+> docker pull python:3.12-slim && docker pull node:20-alpine && docker pull nginx:alpine
+> DOCKER_BUILDKIT=0 docker compose build && docker compose up -d
+> ```
 
 ### 本地开发
 ```bash

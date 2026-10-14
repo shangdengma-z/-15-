@@ -1,0 +1,42 @@
+name: 问题反馈 / Bug Report
+description: 报告功能异常、数据错误或部署问题
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先确认已跑过 `bash scripts/demo.sh`（Mock 模式）能复现，再填写下面内容。
+        涉及真实路网数据的问题，请一并说明是否处于缓存命中状态。
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 现象描述
+      placeholder: 期望看到什么、实际发生了什么
+    validations:
+      required: true
+  - type: input
+    id: center
+    attributes:
+      label: 复现用的中心点坐标
+      description: 纬度, 经度（BD09LL），例如 40.0703, 116.3306
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: 运行模式
+      options: [Mock（BMAP_MOCK=1）, 真实 API, Docker Compose, 不确定]
+    validations:
+      required: true
+  - type: textarea
+    id: meta
+    attributes:
+      label: 报告里的运行指标
+      description: 页面「3. 运行指标」区域的内容（API 调用数 / 缓存命中 / 是否出现降级提示）
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志
+      description: 后端终端输出或浏览器控制台报错，会自动格式化为代码块
+      render: shell
