@@ -10,7 +10,7 @@
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from . import auth, scope
+from . import auth, db, scope
 from .config import settings
 
 SID_COOKIE = "sid"
@@ -96,6 +96,10 @@ def register(body: Credentials, request: Request, response: Response):
         raise HTTPException(400, str(e)) from None
     # 注册即登录：把"最近登录"也记上，否则个人中心里刚注册的人会一直显示"—"
     auth.touch_login(uid)
+    if auth.is_sqlite() and auth.user_count() <= 1:
+        # 单机启用账号只是加一道门禁：把无主的历史档案交给第一个账号，
+        # 否则一登录发现档案全空，看起来像是被这个功能删掉了
+        db.claim_legacy_runs(uid)
     signed = auth.open_session(uid, client_ip(request))
     _issue(request, response, signed)
     return {"id": uid, "email": body.email.strip().lower()}

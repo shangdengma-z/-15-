@@ -44,3 +44,9 @@ deploy/certbot-www/
 backup/
 backend/tmp*.log
 data/*_uitest_*/
+
+# 账号层 SQLite 自测的临时库与缓存
+data/cache_acctest_*/
+data/db_acctest_*/
+data/cache_uicheck/
+data/db_uicheck/

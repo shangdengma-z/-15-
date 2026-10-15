@@ -34,6 +34,14 @@ app.add_middleware(CORSMiddleware, allow_origins=_ALLOWED, allow_methods=["*"],
 JOBS: dict = {}
 AGENT_JOBS: dict = {}
 
+# 开了多用户就把账号四张表准备好（幂等）。连不上库也不能让进程起不来——
+# 那种情况由 /api/health 的 auth 字段如实报出来，比启动即崩好查。
+if settings.auth_enabled:
+    try:
+        auth.init_schema()
+    except Exception as e:  # noqa: BLE001 - 启动期任何失败都要继续 serving 并报真话
+        print(f"[warn] 账号库初始化未完成（{settings.db_backend}）：{type(e).__name__}: {str(e)[:120]}")
+
 # 全局并发闸：一次体检是 180+ 次上游请求 + 8 秒等待，2C2G 上不设闸会被十几个并发打满
 JOB_SLOTS = asyncio.Semaphore(max(1, settings.job_slots))
 
@@ -123,10 +131,14 @@ async def auth_gate(request: Request, call_next):
 @app.get("/api/health")
 async def health():
     stats = await asyncio.to_thread(db.stats)
-    return {"ok": True, "mock": settings.mock, "ak_configured": bool(settings.server_ak),
-            "llm_configured": llm.enabled, "llm_model": settings.llm_model if llm.enabled else None,
-            "quota_exhausted": client.quota_exhausted, "db_path": settings.db_path,
-            "communities_stored": stats["communities"]}
+    out = {"ok": True, "mock": settings.mock, "ak_configured": bool(settings.server_ak),
+           "llm_configured": llm.enabled, "llm_model": settings.llm_model if llm.enabled else None,
+           "quota_exhausted": client.quota_exhausted, "db_path": settings.db_path,
+           "communities_stored": stats["communities"]}
+    if settings.auth_enabled:   # 账号库到底连上没有，要说实话（sqlite/mysql 同一字段）
+        out["auth"] = await asyncio.to_thread(auth.healthcheck)
+        out["auth_backend"] = settings.db_backend
+    return out
 
 
 class ConfigRequest(BaseModel):
@@ -182,8 +194,12 @@ def _user_config_view(request: Request, stored: bool | None = None,
     c = creds or scope.snapshot_creds()
     stored = bool(p and p.store_keys) if stored is None else stored
 
-    def src(v: str) -> str:
-        return ("store" if stored else "browser") if v else "empty"
+    def src(v: str, fallback: bool) -> str:
+        if v:
+            return "store" if stored else "browser"
+        # 请求里没带钥匙、但部署级 .env 有：出网会走那份兜底，面板不能说"未配置"。
+        # 掩码仍然留空——那是别人的 key 的前后四位，没必要发给每个登录用户。
+        return "env" if fallback else "empty"
 
     ak, llm_key = c.get("ak") or "", c.get("llm_key") or ""
     mode = "mock" if scope.mock_mode(settings.mock) else "real"
@@ -193,11 +209,14 @@ def _user_config_view(request: Request, stored: bool | None = None,
             "account": None if p is None else {"id": p.id, "email": p.email,
                                                "nickname": p.nickname, "store_keys": p.store_keys,
                                                "budget_left": auth.budget_left(p.id)},
-            "bmap": {"ak_masked": _mask(ak), "ak_source": src(ak),
-                     "sk_set": bool(c.get("sk")), "sk_source": src(c.get("sk") or "")},
-            "llm": {"configured": bool(llm_key), "model": c.get("llm_model") or settings.llm_model,
+            "bmap": {"ak_masked": _mask(ak), "ak_source": src(ak, bool(settings.server_ak)),
+                     "sk_set": bool(c.get("sk")) or bool(settings.server_sk),
+                     "sk_source": src(c.get("sk") or "", bool(settings.server_sk))},
+            "llm": {"configured": bool(llm_key) or bool(settings.llm_api_key),
+                    "model": c.get("llm_model") or settings.llm_model,
                     "base_url": c.get("llm_base") or settings.llm_base_url,
-                    "key_masked": _mask(llm_key), "key_source": src(llm_key)}}
+                    "key_masked": _mask(llm_key),
+                    "key_source": src(llm_key, bool(settings.llm_api_key))}}
 
 
 @app.get("/api/config")

@@ -42,8 +42,12 @@ docker compose up --build
    大模型 API Key / Base URL / Model 与限流档位。**填了密钥就默认真发一次探测请求校验**
    （百度用与本项目相同的圆形检索，要求 `status=0` 且有明细；大模型发一条 1 token 的 ping），
    校验不过返回 422 并带上百度/上游的原始状态文案，**不会写入也不会切模式**；面板上还有
-   「先测一下（不保存）」可单独验证。密钥只改当前后端进程的内存，接口仅回掩码（前 4 后 4），
-   不落盘、不写日志、不在页面回显明文，重启即回到 `.env`；因此没有做多用户登录（理由见面板内说明）
+   「先测一下（不保存）」可单独验证。免登录单机形态下密钥只改当前后端进程的内存，接口仅回掩码
+   （前 4 后 4），不落盘、不写日志、不在页面回显明文，重启即回到 `.env`
+10. 门禁与个人中心（`AUTH_ENABLED=1`，账号库可选 SQLite 或 MySQL）：登录页先讲清"密钥与数据存在哪里"，
+   会话 cookie 是**浏览器会话级**——关掉浏览器再打开就要重新登录；「个人中心」里能看到自己名下的
+   建档数/体检次数/平均分/出网与缓存命中、当日剩余次数、密钥去向，可改昵称、可退出登录
+   （退出清本机钥匙并回到登录首页）。数据按账号隔离：同社区两人各存一份，越权读一律 404
 
 界面是**四列工作台栅格**（图标导轨 62 · 选点控制 288 · 地图 · 结论面板 408），全部使用实色纸面卡片 +
 发丝边框，**没有毛玻璃、没有高饱和渐变**：底色 `#f4f6f2`、卡片 `#fff`、主色低饱和青绿 `#4e807a`，
@@ -188,12 +192,24 @@ npm run dev
 
 | 变化 | 说明 |
 |---|---|
-| 账号与会话 | MySQL 8 存 `users/sessions/quotas/rate_log`；口令 argon2id 加盐哈希，会话 cookie 只存 token 的 SHA-256，签名走 `SECRET_KEY` |
+| 账号与会话 | 账号库 MySQL 8（公网多用户）或 SQLite（单机带门禁，与档案同文件）：`users/sessions/quotas/rate_log` 四张表两边同构；口令 argon2id 加盐哈希，会话 cookie 只存 token 的 SHA-256，签名走 `SECRET_KEY` |
 | 数据隔离 | 缓存目录与档案 `scene_key` 都按 `u<用户id>` 分片：同社区两人各存一份，互相读不到（读别人的 id 一律 404，不区分"不存在"与"越权"） |
 | 密钥去向 | **默认只存用户自己浏览器的 localStorage**，随请求头 `X-Bmap-AK`/`X-Llm-Key` 带上、服务端不留副本；用户主动勾"加密保存到本账户"才用 `MASTER_KEY` Fernet 加密入库，取消勾选即刻删除 |
 | 额度与限速 | 每人每日 `DAILY_ANALYSIS_BUDGET` 次体检（提交即扣，防并发绕过）、每 IP 每日注册数、登录尝试 10 分钟窗口；全局 `JOB_SLOTS` 并发闸 |
 | 写接口 | 一律要求登录 + CSRF 双提交（`Sec-Fetch-Site: same-origin` 亦视为同源）；`POST /api/config` 在多用户下**不允许**改数据模式与限流档位，那是部署级配置 |
 | 演示模式 | 多用户下用请求级 `X-Demo-Mode: 1` 表达，不会把一个账号的开关传染给全站 |
+
+**三种运行形态**（只靠 `.env` 两个开关切换，代码路径同一套）：
+
+| `AUTH_ENABLED` | `DB_BACKEND` | 形态 | 账号库位置 |
+|---|---|---|---|
+| `0` | 任意 | 免登录单机（最省事的交付/录屏形态） | 不用 |
+| `1` | `sqlite` | **单机带门禁**：重开浏览器要登录、有个人中心、按人隔离档案 | 与档案同一个 `BMAP_DB_PATH` 文件 |
+| `1` | `mysql` | 公网多用户 | MySQL 8（`DB_*` 四项 + `DB_ROOT_PASSWORD`） |
+
+启用账号后第一次注册的账号会**认领**没有归属的历史档案（`user_id IS NULL` 的那些），
+否则你一登录会发现原来那批社区记录"不见了"；之后注册的账号仍各看各的。
+`GET /api/health` 里的 `auth` 与 `auth_backend` 会如实报出账号库连没连上。
 
 ```bash
 # 1) 服务器准备：swap、目录、证书（脚本会打印它不替你做的防火墙与百度控制台两步）
@@ -314,12 +330,17 @@ python backend/tests/test_modules_offline.py
 # 限速窗口、额度扣减方向、AUTH_ENABLED=0 时整条链路放行
 python backend/tests/test_auth_offline.py
 
-# 多用户自测（需要 .env 里配好 MySQL，未配置则自动 SKIP 返回 0）：
-#   test_auth_mysql.py      账号生命周期直连真库，跑完清掉自己造的数据
-#   test_auth_http_mysql.py HTTP 层隔离：A/B 互不可见、越权 404、公开分享只读、
-#                           缺 CSRF 403、额度耗尽 429 且不影响他人、密钥"只在浏览器/入库/取消即删"
+# 多用户自测：
+#   test_auth_mysql.py     账号生命周期直连真 MySQL（没配 DB_PASSWORD 自动 SKIP）
+#   test_auth_sqlite.py    同一套账号层跑在 SQLite 上（不装 MySQL、零密钥，CI 必跑）：
+#                          建表幂等→注册→重复邮箱→会话解析/篡改/吊销→额度扣减→
+#                          密文往返与"取消即删"→限速→级联清理→无主旧档案认领
+#   test_auth_http.py      HTTP 层隔离，账号库跟随 DB_BACKEND：A/B 互不可见、越权 404、
+#                          公开分享只读、缺 CSRF 403、额度耗尽 429 且不影响他人、
+#                          会话 cookie 不带 max-age、密钥"只在浏览器/入库/取消即删"
 python backend/tests/test_auth_mysql.py
-python backend/tests/test_auth_http_mysql.py
+python backend/tests/test_auth_sqlite.py
+python backend/tests/test_auth_http.py
 
 # 出网策略基准（零真实出网，产出 docs/bench_route_strategy.json）
 python scripts/bench_route_strategy.py

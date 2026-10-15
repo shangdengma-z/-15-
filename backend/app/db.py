@@ -188,6 +188,22 @@ def find_scene_run(center: tuple, user_id: int | None = None, enforce: bool = Fa
     return None
 
 
+def claim_legacy_runs(user_id: int) -> int:
+    """把"没有账号时期"的本机旧档案认领给第一个注册的用户。
+
+    单机启用账号只是为了门禁与个人中心，档案本来就在这台机器上；
+    不认领的话第一次登录会发现历史全空了，像是被删掉一样。
+    只对第一个账号生效（调用方负责判断），后来者仍各看各的。
+    """
+    with closing(_open()) as c, c:
+        return c.execute("UPDATE runs SET user_id=? WHERE user_id IS NULL", (user_id,)).rowcount
+
+
+def legacy_run_count() -> int:
+    with closing(_open()) as c:
+        return int(c.execute("SELECT COUNT(*) n FROM runs WHERE user_id IS NULL").fetchone()["n"])
+
+
 def delete_run(run_id: str, user_id: int | None = None, enforce: bool = False) -> bool:
     """只能删自己的；公开与否都不允许删别人的档案。"""
     with closing(_open()) as c, c:

@@ -1,8 +1,10 @@
-"""多用户 HTTP 集成自测：真 MySQL + TestClient，验证"隔离是不是真的成立"。
+"""多用户 HTTP 集成自测：TestClient 打真接口，验证"隔离是不是真的成立"。
 
-不碰百度（BMAP_MOCK=1）、不碰你的正式档案（SQLite 走临时文件），
-但用户/会话/配额/限速都落在真实 MySQL 里，跑完自己清理。
-    .venv/Scripts/python.exe backend/tests/test_auth_http_mysql.py
+账号库跟着 .env 的 DB_BACKEND 走：mysql 就连真 MySQL，sqlite 就把账号四张表建在
+临时库里（不装 MySQL 也能跑，所以这份也进 CI）。两种库跑的是同一套断言——
+这正是账号层"一份 SQL 两种库"这个约定的验收点。
+不碰百度（BMAP_MOCK=1），不碰正式档案，跑完自己清理。
+    .venv/Scripts/python.exe backend/tests/test_auth_http.py
 """
 
 import os
@@ -16,7 +18,14 @@ os.environ.update(
     AUTH_ENABLED="1", BMAP_MOCK="1", BMAP_QPS="500", BMAP_CONCURRENCY="8",
     BMAP_CACHE_DIR=f"data/cache_httptest_{TAG}", BMAP_DB_PATH=f"data/db_httptest_{TAG}/lifestyle.db",
     LLM_API_KEY="", DAILY_ANALYSIS_BUDGET="2", MAX_REG_PER_IP_DAY="50",
+    # 清掉部署级密钥：不装 .env 的机器（CI）与装了 .env 的机器要跑出同一套断言，
+    # 否则"来自 .env"这类来源标注在一边通过、在另一边失败
+    BMAP_SERVER_AK="", BMAP_SERVER_SK="",
 )
+# 签名与加密用的测试密钥：只在这一次运行里签临时会话，跑完账号即删。
+# 没有 .env 的环境（比如 CI 的 SQLite 那一跑）靠这两句才能起来，而不是静默 SKIP。
+os.environ.setdefault("SECRET_KEY", "httptest-session-key")
+os.environ.setdefault("MASTER_KEY", "httptest-master-key")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -55,9 +64,14 @@ def raw_column(user_id, col):
 
 
 def main() -> int:
-    if not (settings.db_password and settings.secret_key and settings.master_key):
-        print("SKIP  未配置 MySQL 连接，跳过 HTTP 多用户自测")
+    need = [settings.secret_key, settings.master_key]
+    if settings.db_backend == "mysql":
+        need.append(settings.db_password)
+    if not all(need):
+        print(f"SKIP  {settings.db_backend} 所需的 SECRET_KEY/MASTER_KEY"
+              + ("/DB_PASSWORD" if settings.db_backend == "mysql" else "") + " 未配齐")
         return 0
+    print(f"== 多用户 HTTP 自测（账号库：{settings.db_backend}）==")
     auth.init_schema()
 
     with TestClient(app) as anon:
@@ -156,6 +170,16 @@ def main() -> int:
             check("多用户下模式与限流改不动",
                   anon.post("/api/config", json={"mode": "mock", "verify": False},
                             headers={"X-CSRF-Token": csrf_of(anon)}).status_code == 403)
+            # 部署级兜底 key：面板要说"来自 .env"，但不能把别人的 key 掩码发给每个登录用户
+            settings.server_ak = "ENVSAMPLEAK0000000001"
+            fb = anon.get("/api/config").json()
+            check("兜底 key 如实标注且不泄漏掩码",
+                  fb["bmap"]["ak_source"] == "env" and fb["bmap"]["ak_masked"] == "",
+                  str(fb["bmap"]))
+            settings.server_ak = ""
+            check("没有兜底 key 时老实说未配置",
+                  anon.get("/api/config").json()["bmap"]["ak_source"] == "empty")
+
             # 演示头是请求级的：本自测跑在 BMAP_MOCK=1 上，先把部署值假装成真实路网才好对比
             settings.mock = False
             on = anon.get("/api/config", headers={"X-Demo-Mode": "1"}).json()["mock"]

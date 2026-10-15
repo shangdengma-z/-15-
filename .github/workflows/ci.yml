@@ -13,6 +13,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install backend deps
+        run: pip install -r backend/requirements.txt
       - name: Lint (ruff)
         run: |
           pip install ruff
@@ -23,6 +25,10 @@ jobs:
         run: python backend/tests/test_modules_offline.py
       - name: Auth layer offline self-test (no DB required)
         run: python backend/tests/test_auth_offline.py
+      - name: Account layer on SQLite (no MySQL, no secrets)
+        run: python backend/tests/test_auth_sqlite.py
+      - name: Multi-user HTTP isolation on SQLite (mock map)
+        run: python backend/tests/test_auth_http.py
       - name: Persistence & scenario offline self-test (temp SQLite)
         run: python backend/tests/test_persistence_offline.py
       - name: Smoke test (mock mode)
@@ -30,7 +36,6 @@ jobs:
           BMAP_MOCK: '1'
           BMAP_QPS: '1000'
         run: |
-          pip install -r backend/requirements.txt
           timeout 20 uvicorn app.main:app --app-dir backend &
           sleep 3
           curl -sf http://localhost:8000/api/health | grep '"ok":true'
@@ -43,7 +48,6 @@ jobs:
           BMAP_MOCK: '1'
           BMAP_QPS: '1000'
         run: |
-          pip install -r backend/requirements.txt
           timeout 30 uvicorn app.main:app --app-dir backend --port 8001 &
           sleep 3
           JOB=$(curl -sf -X POST http://localhost:8001/api/analysis -H 'Content-Type: application/json' \

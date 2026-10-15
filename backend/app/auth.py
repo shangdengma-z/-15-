@@ -1,6 +1,9 @@
-"""多用户认证与账户数据层（MySQL 8）。
+"""多用户认证与账户数据层（MySQL 8 或 SQLite，由 DB_BACKEND 决定）。
 
-只在 AUTH_ENABLED=1 时启用；关掉就是原来的单机版，交付与录屏不受影响。
+只在 AUTH_ENABLED=1 时启用；关掉就是原来的免登录单机版，交付与录屏不受影响。
+DB_BACKEND=sqlite 时账号四张表落在 `BMAP_DB_PATH` 那个文件里（与档案同库），
+没装 MySQL 的机器也能注册、登录、按人隔离——单机演示要的就是这条路径。
+DB_BACKEND=mysql 是公网多用户的推荐形态（连接与并发更稳，见 deploy/）。
 
 三条刻意的取舍：
 1. **不用 JWT**：会话落库 + HttpOnly 签名 cookie，可随时吊销（登出/改密/删号即刻失效），
@@ -16,12 +19,16 @@ import hashlib
 import hmac
 import os
 import secrets
+import sqlite3
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-import pymysql
+try:
+    import pymysql
+except ModuleNotFoundError:      # 单机 SQLite 形态不装驱动也要能起服务
+    pymysql = None
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from cryptography.fernet import Fernet, InvalidToken
@@ -80,17 +87,148 @@ SCHEMA = [
     """,
 ]
 
+# SQLite 版：单机（DB_BACKEND=sqlite）用，表与约束语义与 MySQL 版一致。
+# DATETIME 在 SQLite 里统一存 'YYYY-MM-DD HH:MM:SS' 文本——这个格式字典序==时间序，
+# 所以 expires_at > ? 这类比较照原样成立，不需要额外的转换。
+SCHEMA_SQLITE = [
+    """
+    CREATE TABLE IF NOT EXISTS users (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      email         TEXT    NOT NULL UNIQUE,
+      pass_hash     TEXT    NOT NULL,
+      nickname      TEXT    NOT NULL DEFAULT '',
+      created_at    TEXT    NOT NULL,
+      last_login_at TEXT,
+      bmap_ak_enc   TEXT,
+      bmap_sk_enc   TEXT,
+      llm_key_enc   TEXT,
+      llm_base_url  TEXT    NOT NULL DEFAULT '',
+      llm_model     TEXT    NOT NULL DEFAULT '',
+      store_keys    INTEGER NOT NULL DEFAULT 0,
+      status        TEXT    NOT NULL DEFAULT 'active'
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS sessions (
+      token_hash TEXT    PRIMARY KEY,
+      user_id    INTEGER NOT NULL,
+      created_at TEXT    NOT NULL,
+      expires_at TEXT    NOT NULL,
+      ip         TEXT    NOT NULL DEFAULT '',
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS quotas (
+      user_id     INTEGER NOT NULL,
+      day         TEXT    NOT NULL,
+      analyses    INTEGER NOT NULL DEFAULT 0,
+      agent_turns INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_id, day),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS rate_log (
+      bucket     TEXT    NOT NULL,
+      window_key TEXT    NOT NULL,
+      hits       INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (bucket, window_key)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)",
+]
+
 
 class AuthError(Exception):
     """认证层的统一失败原因，HTTP 层只把它翻译成状态码，不透传内部细节。"""
+
+
+# 唯一约束冲突在两种库里是不同异常，上层只关心"这个邮箱已经用过了"
+_DUPLICATE_ERRORS = tuple(
+    [sqlite3.IntegrityError] + ([pymysql.err.IntegrityError] if pymysql else []))
+
+
+class _SqliteCursor:
+    """让 SQLite 光标长得像 pymysql 的 DictCursor：`%s` 占位、按列名取值。
+
+    这样上层 SQL 只有一份——两份手写 SQL 迟早会跑出"MySQL 上加了列、SQLite 上忘加"那种差异，
+    而单机演示走的正是 SQLite 这条路。
+    """
+
+    def __init__(self, cur):
+        self._cur = cur
+
+    def execute(self, sql, args=()):
+        return self._cur.execute(sql.replace("%s", "?"),
+                                 [a.strftime("%Y-%m-%d %H:%M:%S") if isinstance(a, datetime) else a
+                                  for a in (args or ())])
+
+    def _row(self, r):
+        return None if r is None else {k: r[k] for k in r.keys()}
+
+    def fetchone(self):
+        return self._row(self._cur.fetchone())
+
+    def fetchall(self):
+        return [self._row(r) for r in self._cur.fetchall()]
+
+    @property
+    def lastrowid(self):
+        return self._cur.lastrowid
+
+    def close(self):
+        self._cur.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+class _SqliteConn:
+    """账号层只用 connect() 的三个动作：cursor()、上下文提交、关闭。"""
+
+    def __init__(self, path: str):
+        # 目录可能还不存在（首次启动、或测试里的临时库）：与档案层同一套做法
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        self._c = sqlite3.connect(path, timeout=15)
+        self._c.row_factory = sqlite3.Row           # 让光标能按列名取，长得像 DictCursor
+        self._c.execute("PRAGMA foreign_keys=ON")   # 删号要能级联清掉会话/配额
+
+    def cursor(self):
+        return _SqliteCursor(self._c.cursor())
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            self._c.commit()
+        else:
+            self._c.rollback()
+        self._c.close()
+        return False
+
+
+def is_sqlite() -> bool:
+    return settings.db_backend != "mysql"
 
 
 def _now() -> datetime:
     return datetime.now().replace(microsecond=0)
 
 
-def connect() -> pymysql.connections.Connection:
+def connect():
     """每次调用一条短连接：本服务是 IO 密集 + 低频写，不值得上连接池复杂度。"""
+    if is_sqlite():
+        return _SqliteConn(settings.db_path)
+    if pymysql is None:
+        raise AuthError("DB_BACKEND=mysql 但没装 pymysql：pip install pymysql（或改用 DB_BACKEND=sqlite）")
     return pymysql.connect(
         host=settings.db_host, port=settings.db_port, user=settings.db_user,
         password=settings.db_password, database=settings.db_name, charset="utf8mb4",
@@ -101,8 +239,23 @@ def connect() -> pymysql.connections.Connection:
 
 def init_schema() -> None:
     with connect() as c, c.cursor() as cur:
-        for ddl in SCHEMA:
+        for ddl in (SCHEMA_SQLITE if is_sqlite() else SCHEMA):
             cur.execute(ddl)
+
+
+def _bump(table: str, cols: tuple, col: str, vals: tuple) -> None:
+    """计数 +1 的幂等自增：MySQL 用 ON DUPLICATE KEY，SQLite 用 ON CONFLICT DO UPDATE。
+
+    写成 helper 而不是三份相似 SQL：配额与限速三处逻辑必须完全一致，
+    漏一处就会出现"MySQL 上额度生效、SQLite 上能无限刷"。
+    调用方给的 cols 顺序即主键列顺序（SQLite 的 ON CONFLICT 需要显式点名）。
+    """
+    n = len(cols)
+    sql = f"INSERT INTO {table}({','.join(cols)}) VALUES ({','.join(['%s'] * n)})"
+    sql += (f" ON CONFLICT({','.join(cols[:n - 1])}) DO UPDATE SET {col} = {col} + 1"
+            if is_sqlite() else f" ON DUPLICATE KEY UPDATE {col} = {col} + 1")
+    with connect() as c, c.cursor() as cur:
+        cur.execute(sql, tuple(vals[:n]))
 
 
 # ---------- 口令与加密 ----------
@@ -203,21 +356,29 @@ class Principal:
     email: str
     nickname: str
     store_keys: bool
-    created_at: datetime | None = None
-    last_login_at: datetime | None = None
+    # MySQL 给 datetime 对象，SQLite 给 'YYYY-MM-DD HH:MM:SS' 文本（见 SCHEMA_SQLITE 注释）
+    created_at: datetime | str | None = None
+    last_login_at: datetime | str | None = None
 
     @property
     def cache_subdir(self) -> str:
         # 缓存按用户分目录：全局共享会把 A 的真实结果直接喂给 B
         return f"u{self.id}"
 
+    @staticmethod
+    def _stamp(v: datetime | str | None) -> str | None:
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return v[:16]
+        return v.strftime("%Y-%m-%d %H:%M")
+
     def public(self) -> dict:
         """给前端看的自身资料；不含口令、也不含密钥明文（只有掩码归 /api/config 管）。"""
         return {"id": self.id, "email": self.email, "nickname": self.nickname,
-                "store_keys": self.store_keys,
-                "created_at": self.created_at.strftime("%Y-%m-%d %H:%M") if self.created_at else None,
-                "last_login_at": (self.last_login_at.strftime("%Y-%m-%d %H:%M")
-                                  if self.last_login_at else None)}
+                "store_keys": bool(self.store_keys),
+                "created_at": self._stamp(self.created_at),
+                "last_login_at": self._stamp(self.last_login_at)}
 
 
 def create_user(email: str, raw_pass: str, nickname: str = "", ip: str = "") -> int:
@@ -231,7 +392,7 @@ def create_user(email: str, raw_pass: str, nickname: str = "", ip: str = "") -> 
             cur.execute(
                 "INSERT INTO users(email, pass_hash, nickname, created_at) VALUES (%s,%s,%s,%s)",
                 (email, hash_password(raw_pass), nickname.strip()[:60], _now()))
-        except pymysql.err.IntegrityError:
+        except _DUPLICATE_ERRORS:
             raise AuthError("该邮箱已注册，请直接登录（本站不做邮箱验证，也没有找回通道）") from None
         return int(cur.lastrowid)
 
@@ -297,11 +458,10 @@ def _window(window_sec: int) -> str:
 
 def _allow(bucket: str, key: str, limit: int, window_sec: int) -> bool:
     """粗粒度令牌桶：一行计数 + 固定窗口。够用、无额外依赖、重启不复活额度。"""
+    wk = _window(window_sec) + ":" + key
+    _bump("rate_log", ("bucket", "window_key", "hits"), "hits", (bucket, wk, 1))
     with connect() as c, c.cursor() as cur:
-        cur.execute("INSERT INTO rate_log(bucket,window_key,hits) VALUES (%s,%s,1) "
-                    "ON DUPLICATE KEY UPDATE hits = hits + 1", (bucket, _window(window_sec) + ":" + key))
-        cur.execute("SELECT hits FROM rate_log WHERE bucket=%s AND window_key=%s",
-                    (bucket, _window(window_sec) + ":" + key))
+        cur.execute("SELECT hits FROM rate_log WHERE bucket=%s AND window_key=%s", (bucket, wk))
         row = cur.fetchone()
     return not row or int(row["hits"]) <= limit
 
@@ -324,17 +484,13 @@ def budget_left(user_id: int) -> int:
 
 
 def consume_analysis(user_id: int) -> None:
-    with connect() as c, c.cursor() as cur:
-        cur.execute("INSERT INTO quotas(user_id,day,analyses) VALUES (%s,%s,1) "
-                    "ON DUPLICATE KEY UPDATE analyses = analyses + 1",
-                    (user_id, _now().date().isoformat()))
+    _bump("quotas", ("user_id", "day", "analyses"), "analyses",
+          (user_id, _now().date().isoformat(), 1))
 
 
 def consume_agent(user_id: int) -> None:
-    with connect() as c, c.cursor() as cur:
-        cur.execute("INSERT INTO quotas(user_id,day,agent_turns) VALUES (%s,%s,1) "
-                    "ON DUPLICATE KEY UPDATE agent_turns = agent_turns + 1",
-                    (user_id, _now().date().isoformat()))
+    _bump("quotas", ("user_id", "day", "agent_turns"), "agent_turns",
+          (user_id, _now().date().isoformat(), 1))
 
 
 # ---------- 用户密钥（可选落库） ----------
@@ -383,6 +539,12 @@ def client_ip(request) -> str:
     """优先取反代写上的真实来源 IP，退化到 socket。只用于限速，不参与授权判断。"""
     xff = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
     return (xff or (request.client.host if request.client else ""))[:45]
+
+
+def user_count() -> int:
+    with connect() as c, c.cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS n FROM users")
+        return int(cur.fetchone()["n"])
 
 
 def healthcheck() -> dict:
