@@ -5,14 +5,9 @@
         <span class="mark num">15′</span>
         <h2>15 分钟生活圈 · 智能体检</h2>
         <p class="sub">真实路网等时圈测绘 · 服务盲区核验 · 选址建议</p>
-        <ul class="why">
-          <li><b>各人用自己的 Key</b>：百度 AK 与大模型 Key 默认只存在你这台设备的浏览器里，
-            服务端不留副本，跑出来的配额记在你名下。</li>
-          <li><b>档案互相隔离</b>：历史体检、盲区记录、智能体对话按账号分目录，
-            别人看不到也删不掉；想让某条报告公开可访问，要你自己点"分享"。</li>
-          <li><b>有每日额度</b>：一次体检约 180 次路线规划调用，服务端按账号限当日次数，
-            避免一个页面被刷爆整个账号的 1 万次/天配额。</li>
-        </ul>
+        <p class="intro">用百度地图真实路网把「15 分钟生活圈」画出来：一次体检给出 5/10/15 分钟
+          步行可达圈、四类民生设施覆盖、连片服务盲区与导则达标对照，AI 助手可在此基础上给选址建议。
+          你自己的 AK 与 Key 只存在这台设备上，配额记在你名下，档案按账号彼此隔离。</p>
       </div>
 
       <form class="form" @submit.prevent="submit">
@@ -36,8 +31,7 @@
             {{ peek ? '隐藏' : '显示' }}</button>
         </label>
         <p v-if="mode === 'register'" class="tip">
-          口令用 argon2id 加盐哈希后存储，服务端存不下你的明文口令，也没有"找回"通道——
-          忘了只能重新注册。
+          口令用 argon2id 加盐哈希后存储，没有"找回"通道—— 忘了只能重新注册。
         </p>
 
         <p v-if="err" class="err">{{ err }}</p>
@@ -106,10 +100,7 @@ async function submit() {
 }
 .side h2 { font-size: 16px; }
 .sub { font-size: 11px; color: var(--dim); margin-top: 3px; }
-.why { list-style: none; display: flex; flex-direction: column; gap: 11px; margin-top: 6px; }
-.why li { font-size: 11.5px; line-height: 1.75; color: var(--muted);
-  padding-left: 12px; border-left: 2px solid var(--line-2); }
-.why b { color: var(--ink); font-weight: 600; }
+.intro { font-size: 11.5px; color: var(--muted); line-height: 1.85; margin-top: 4px; }
 
 .form { padding: 26px 24px; display: flex; flex-direction: column; gap: 12px; }
 .tabs { display: flex; gap: 6px; padding: 4px; border-radius: 10px; background: var(--surface-2); }

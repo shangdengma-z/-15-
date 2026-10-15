@@ -46,9 +46,6 @@
         <div class="cell"><em class="num">{{ stats.cache_hits || 0 }}</em><span>缓存命中</span></div>
         <div class="cell"><em class="num">{{ stats.agent_turns || 0 }}</em><span>智能体对话</span></div>
       </div>
-      <p class="note">这些数字只算你名下的档案：缓存命中 {{ stats.cache_hits || 0 }} 次意味着
-        同样多的请求没有再次出网，命中率 <b class="num">{{ hitPct }}</b>。
-        别人的档案、密钥与用量你都看不到，反之也一样。</p>
     </section>
 
     <section>
@@ -112,8 +109,6 @@ const initial = computed(() => {
   const s = (a?.nickname || a?.email || '?').trim()
   return /[一-龥]/.test(s[0]) ? s[0] : s.slice(0, 1).toUpperCase()
 })
-const hitPct = computed(() => (props.stats.cache_hit_rate == null
-  ? '—' : Math.round(props.stats.cache_hit_rate * 100) + '%'))
 // 额度条：分母是服务端告知的当日上限，不让页面自己猜
 const quotaPct = computed(() => {
   const { budgetLeft, budgetTotal } = props

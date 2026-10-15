@@ -38,8 +38,6 @@
         <input v-model="demo" type="checkbox" @change="applyDemo" />
         <span>用合成路网演示（不消耗你的配额、不写入档案）；打开地图与流程照常，跑完约 1 秒</span>
       </label>
-      <p v-if="isUser" class="note">多用户下「真实/演示」和限流档位是<strong>部署级</strong>配置，
-        由服务器的 <code>.env</code> 决定，页面上改不动——否则一个账号就能把所有人的请求切成合成数据。</p>
       <p v-if="cfg.quota_exhausted" class="warnline">服务端今日路线规划配额已用完：
         勾上合成路网演示可继续走完整流程，或明天再跑真实数据。</p>
 
