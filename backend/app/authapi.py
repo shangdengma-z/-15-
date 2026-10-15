@@ -40,8 +40,11 @@ def _issue(request: Request, response: Response, signed: str) -> None:
     # request 显式传参，不用全局变量：异步服务里两个请求交叠时，
     # 全局变量会把 A 的 Secure 位决定给 B。
     csrf = auth.csrf_bound_to(signed)
-    opts = {"samesite": "lax", "secure": secure(request),
-            "max_age": settings.session_days * 86400, "path": "/"}
+    # 刻意不写 max_age/expires：这是"浏览器会话级"cookie，关掉浏览器就没了，重开必须重新登录。
+    # 服务端 sessions.expires_at 仍按 SESSION_DAYS 走——它管"这张令牌多久作废、能不能被吊销"，
+    # 与浏览器活多久无关。浏览器一直开着（或开了"继续浏览上次的页面"）时 cookie 会留存，
+    # 这是会话 cookie 的固有行为；要立刻退出请用「个人中心 → 退出登录」。
+    opts = {"samesite": "lax", "secure": secure(request), "path": "/"}
     response.set_cookie(SID_COOKIE, signed, httponly=True, **opts)
     response.set_cookie(CSRF_COOKIE, csrf, httponly=False, **opts)
 
@@ -69,9 +72,12 @@ def is_protected(path: str, method: str) -> bool:
     以及匿名可看的分享报告（GET 在上面已经整批放行）。
 
     POST /api/config **不在**放行名单里：它会改账户下的密钥去向，必须登录且过 CSRF。
+    /api/auth/profile 也不放行——它是"已登录状态下的写操作"，同样要过 CSRF。
     """
     if method == "GET" or not settings.auth_enabled:
         return False
+    if path.startswith("/api/auth/profile"):
+        return True
     open_paths = ("/api/auth/", "/api/config/verify")
     if path.startswith(open_paths) or path in ("/api/health", "/api/communities"):
         return False
@@ -88,6 +94,8 @@ def register(body: Credentials, request: Request, response: Response):
         uid = auth.create_user(body.email, body.password, body.nickname, client_ip(request))
     except auth.AuthError as e:
         raise HTTPException(400, str(e)) from None
+    # 注册即登录：把"最近登录"也记上，否则个人中心里刚注册的人会一直显示"—"
+    auth.touch_login(uid)
     signed = auth.open_session(uid, client_ip(request))
     _issue(request, response, signed)
     return {"id": uid, "email": body.email.strip().lower()}
@@ -120,9 +128,22 @@ def logout(request: Request, response: Response):
 @router.get("/me")
 def me(request: Request):
     if not settings.auth_enabled:
-        return {"auth_enabled": False, "user": None, "budget_left": None}
+        return {"auth_enabled": False, "user": None, "budget_left": None, "budget_total": None}
     p = principal(request)
-    return {"auth_enabled": True,
-            "user": None if p is None else {"id": p.id, "email": p.email, "nickname": p.nickname,
-                                            "store_keys": p.store_keys},
-            "budget_left": None if p is None else auth.budget_left(p.id)}
+    return {"auth_enabled": True, "user": None if p is None else p.public(),
+            "budget_left": None if p is None else auth.budget_left(p.id),
+            # 前端画额度条要用总数，别让页面自己去猜当天的上限是多少
+            "budget_total": settings.daily_analysis_budget}
+
+
+class Nickname(BaseModel):
+    nickname: str = Field(..., max_length=60)
+
+
+@router.post("/profile")
+def update_profile(body: Nickname, request: Request):
+    """改显示名。邮箱是登录凭据、口令另有流程，都不在这里动。"""
+    p = require_principal(request)
+    if not body.nickname.strip():
+        raise HTTPException(422, "昵称不能为空")
+    return {"nickname": auth.set_nickname(p.id, body.nickname)}

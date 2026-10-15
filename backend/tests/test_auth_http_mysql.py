@@ -74,6 +74,9 @@ def main() -> int:
         check("会话 cookie 是 HttpOnly", "HttpOnly" in a.headers.get("set-cookie", ""))
         me = anon.get("/api/auth/me").json()
         check("me 认出当前用户", me["user"] and me["user"]["email"] == f"a.{TAG}@example.test")
+        # 注册当次就是登录：个人中心里"最近登录"不该是空的
+        check("注册即登录，last_login 已记录", bool(me["user"]["last_login_at"]),
+              str(me["user"]["created_at"]))
         check("me 报剩余预算", me["budget_left"] == settings.daily_analysis_budget, str(me["budget_left"]))
 
         with TestClient(app) as b:
@@ -160,6 +163,32 @@ def main() -> int:
             check("演示头只改本次请求，不改部署配置",
                   on is True and off is False and settings.mock is False, f"{on}/{off}")
             settings.mock = True    # 还原，后面的单机回归仍按合成路网跑
+
+            # 6.6) 会话 cookie 是"浏览器会话级"：关掉浏览器就得重新登录，所以不写 max-age/expires
+            li = anon.post("/api/auth/login", json={"email": f"a.{TAG}@example.test",
+                                                    "password": "testing-pass-1"})
+            sid = next((h for h in li.headers.get_list("set-cookie") if h.startswith("sid=")), "")
+            check("重新登录成功且会话 cookie 不带 max-age/expires",
+                  li.status_code == 200 and bool(sid) and "max-age" not in sid.lower()
+                  and "expires" not in sid.lower(), sid[:70])
+            check("会话 cookie 仍是 HttpOnly + SameSite=Lax",
+                  "httponly" in sid.lower() and "samesite=lax" in sid.lower())
+
+            # 6.7) 个人中心：昵称能改、字段齐全，写操作既要求登录也要求 CSRF
+            prof = anon.post("/api/auth/profile", json={"nickname": "改名后的我"},
+                             headers={"X-CSRF-Token": csrf_of(anon)})
+            who = anon.get("/api/auth/me").json()
+            check("改名生效并回显", prof.status_code == 200
+                  and prof.json()["nickname"] == "改名后的我"
+                  and who["user"]["nickname"] == "改名后的我", prof.text[:40])
+            check("me 带注册时间与当日额度上限",
+                  bool(who["user"]["created_at"])
+                  and who["budget_total"] == settings.daily_analysis_budget,
+                  f'{who["user"]["created_at"]} / {who["budget_total"]}')
+            check("空昵称被拒", anon.post("/api/auth/profile", json={"nickname": "   "},
+                                        headers={"X-CSRF-Token": csrf_of(anon)}).status_code == 422)
+            check("改资料缺 CSRF 一样被拒",
+                  anon.post("/api/auth/profile", json={"nickname": "越权"}).status_code == 403)
 
             # 7) 登出即吊销
             lo = anon.post("/api/auth/logout", headers={"X-CSRF-Token": csrf_of(anon)})

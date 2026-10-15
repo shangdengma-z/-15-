@@ -53,6 +53,8 @@ class Settings:
     # 会话 cookie 的签名密钥；MASTER_KEY 只用于"用户主动选择加密保存到账户"的 AK
     secret_key: str = field(default_factory=lambda: _env("SECRET_KEY"))
     master_key: str = field(default_factory=lambda: _env("MASTER_KEY"))
+    # 服务端会话的有效期（sessions.expires_at）。浏览器侧的 cookie 是**会话级**的：
+    # 关掉浏览器就要重新登录，这个值只决定"没关浏览器时多久要重新登录一次"与吊销窗口
     session_days: int = field(default_factory=lambda: int(_env("SESSION_DAYS", "14")))
     # 开放注册的护栏：每 IP 每日注册数、每人每日分析次数、全局并发任务数
     max_reg_per_ip_day: int = field(default_factory=lambda: int(_env("MAX_REG_PER_IP_DAY", "5")))

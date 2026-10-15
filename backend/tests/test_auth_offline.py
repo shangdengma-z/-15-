@@ -110,6 +110,34 @@ def main():
         check("缺 SECRET_KEY 时明确报错", "SECRET_KEY" in str(e))
     settings.secret_key = "unit-test-secret-key-please-change"
 
+    # 7) 守卫判定表：哪些写接口必须登录（这条决定"匿名能不能改别人的东西"）
+    from app import authapi
+    on, settings.auth_enabled = settings.auth_enabled, True
+    try:
+        must = [("/api/analysis", "POST"), ("/api/agent", "POST"), ("/api/advise", "POST"),
+                ("/api/config", "POST"), ("/api/runs/x/public", "POST"), ("/api/runs/x", "DELETE"),
+                ("/api/auth/profile", "POST")]
+        free = [("/api/auth/login", "POST"), ("/api/auth/register", "POST"),
+                ("/api/auth/logout", "POST"), ("/api/config/verify", "POST"),
+                ("/api/health", "GET"), ("/api/runs/x", "GET"), ("/api/auth/me", "GET")]
+        check("写接口一律要登录+CSRF",
+              all(authapi.is_protected(p, m) for p, m in must),
+              [f"{m} {p}" for p, m in must if not authapi.is_protected(p, m)])
+        check("登录/注册/登出/校验与只读分享保持开放",
+              not any(authapi.is_protected(p, m) for p, m in free),
+              [f"{m} {p}" for p, m in free if authapi.is_protected(p, m)])
+        settings.auth_enabled = False
+        check("单机模式下守卫整段放行",
+              not any(authapi.is_protected(p, m) for p, m in must))
+    finally:
+        settings.auth_enabled = on
+
+    # 8) 给前端的自身资料不含口令与密钥明文
+    prof = AUTH.Principal(id=7, email="a@b.com", nickname="小张", store_keys=True,
+                          created_at=None, last_login_at=None).public()
+    check("public() 不含 pass_hash/密钥", "pass_hash" not in prof and "bmap_ak" not in prof,
+          sorted(prof))
+
     print("\n== 认证层自测：" + ("全部通过 ==" if ok else "存在失败 =="))
     return 0 if ok else 1
 

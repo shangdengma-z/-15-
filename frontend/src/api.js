@@ -125,6 +125,14 @@ export async function logout() {
   return json(res)
 }
 
+/** 改显示名（邮箱是登录凭据，不在这里动）。 */
+export async function updateNickname(nickname) {
+  return json(await fetch(api('/api/auth/profile'), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nickname })
+  }))
+}
+
 /** 后端在 401/403/429 时用 detail 说人话，前端别只显示"请求失败"。 */
 export async function errorMessage(res) {
   if (res.ok) return ''

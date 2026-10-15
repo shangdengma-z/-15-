@@ -25,7 +25,7 @@
 
   <div v-if="!gate" class="shell" :class="{ folded: !drawerOpen, 'hide-left': !consoleOpen }">
     <nav class="rail">
-      <button v-for="it in NAV" :key="it.k" class="rbtn" :class="{ on: tab === it.k }"
+      <button v-for="it in navItems" :key="it.k" class="rbtn" :class="{ on: tab === it.k }"
               :title="it.n" @click="switchTab(it.k)">
         <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true">
           <path :d="it.d" fill="none" stroke="currentColor" stroke-width="1.7"
@@ -96,6 +96,9 @@
         <Archive v-if="tab === 'archive'" :history="history" :stats="stats" :compare="compareIds"
                  :comparison="comparison" @load="loadRun" @remove="removeRun" @toggle="toggleCompare" />
         <SettingsPanel v-if="tab === 'settings'" @changed="onConfigChanged" @signed-out="onSignedOut" />
+        <AccountPanel v-if="tab === 'account'" :account="account" :budget-left="budgetLeft"
+                      :budget-total="budgetTotal" :stats="stats" @renamed="onRenamed"
+                      @signed-out="onSignedOut" @goto="switchTab" />
       </div>
     </section>
   </div>
@@ -107,6 +110,7 @@ import AgentPanel from './components/AgentPanel.vue'
 import AdvisePanel from './components/AdvisePanel.vue'
 import Archive from './components/Archive.vue'
 import AuthPanel from './components/AuthPanel.vue'
+import AccountPanel from './components/AccountPanel.vue'
 import MapView from './components/MapView.vue'
 import ReportPanel from './components/ReportPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
@@ -120,15 +124,21 @@ const NAV = [
   { k: 'agent', n: 'AI 助手', d: 'M21 12a8 8 0 01-8 8H8l-4 3v-4.5A8 8 0 1121 12zM8.5 10.5h7M8.5 14h4' },
   { k: 'archive', n: '历史档案', d: 'M12 7.5V12l3 2M20.5 12a8.5 8.5 0 11-17 0 8.5 8.5 0 0117 0z' },
   { k: 'settings', n: '接入设置', d: 'M12 15.5a3.5 3.5 0 100-7 3.5 3.5 0 000 7zM19.4 13a7.6 7.6 0 000-2l1.8-1.4-1.7-3-2.1.9a7.7 7.7 0 00-1.7-1L15.3 6h-3.4l-.4 2.1a7.7 7.7 0 00-1.7 1L7.7 8.2 6 11.2'
-      + ' 7.8 12.6a7.6 7.6 0 000 2L6 16l1.7 3 2.1-.9c.5.4 1.1.8 1.7 1l.4 2.1h3.4l.4-2.1c.6-.2 1.2-.6 1.7-1l2.1.9 1.7-3-1.8-1.4z' }
+      + ' 7.8 12.6a7.6 7.6 0 000 2L6 16l1.7 3 2.1-.9c.5.4 1.1.8 1.7 1l.4 2.1h3.4l.4-2.1c.6-.2 1.2-.6 1.7-1l2.1.9 1.7-3-1.8-1.4z' },
+  // 单机模式没有账号，这一栏就不出现
+  { k: 'account', n: '个人中心', onlyAuth: true,
+    d: 'M12 12a4 4 0 100-8 4 4 0 000 8zM4.5 20.5a7.5 7.5 0 0115 0' }
 ]
+
+const navItems = computed(() => NAV.filter(it => !it.onlyAuth || authOn.value))
 
 const VIEWS = {
   report: ['生活圈体检报告', '健康分、可达圈、导则达标与已核验盲区'],
   advise: ['选址建议', '按人气代理、同类间距与补盲价值推荐候选点位'],
   agent: ['AI 规划助手', '大模型自主编排地图工具，结论直接回标到图上'],
   archive: ['历史档案', '本机 SQLite 记录，点一条即可 0 配额回放'],
-  settings: ['接入设置', '填入你自己的百度 AK 与大模型 Key，并选择它们存在哪里']
+  settings: ['接入设置', '填入你自己的百度 AK 与大模型 Key，并选择它们存在哪里'],
+  account: ['个人中心', '账号、当日额度、密钥去向与退出登录']
 }
 
 const lat = ref('')
@@ -158,6 +168,7 @@ const linkCopied = ref(false)
 const authOn = ref(false)
 const account = ref(null)
 const budgetLeft = ref(null)
+const budgetTotal = ref(null)
 
 // 单机模式（后端 AUTH_ENABLED=0）authOn 恒为 false，这一关直接放行，交付路径与录屏不受影响
 const gate = computed(() => authOn.value && !account.value)
@@ -173,6 +184,7 @@ onMounted(async () => {
   authOn.value = !!who.auth_enabled
   account.value = who.user || null       // 必须先赋值再算 gate：反了就会把已登录的人挡在登录页
   budgetLeft.value = who.budget_left ?? null
+  budgetTotal.value = who.budget_total ?? null
   if (gate.value) return          // 停在登录视图：没登录就不发业务请求，省得满屏 401
   await boot()
 })
@@ -184,7 +196,6 @@ async function boot() {
     const src = await (await fetch(`${API}/api/${authOn.value ? 'config' : 'health'}`)).json()
     mockMode.value = !!src.mock
     quotaOut.value = !!src.quota_exhausted
-    if (src.account) budgetLeft.value = src.account.budget_left ?? budgetLeft.value
   } catch (e) { /* 后端未就绪时不显示状态条 */ }
   await refreshLists()
   await replayFromHash()
@@ -197,18 +208,31 @@ async function boot() {
 
 async function onLogin(user) {
   account.value = user
-  const who = await me()
-  budgetLeft.value = who.budget_left ?? null
+  await refreshSession()
   await boot()
+}
+
+/** me() 是会话与额度的唯一来源：登录、跑完一次体检、改名后都重新取一次 */
+async function refreshSession() {
+  const who = await me()
+  if (who.user) account.value = who.user
+  budgetLeft.value = who.budget_left ?? null
+  budgetTotal.value = who.budget_total ?? null
+}
+
+function onRenamed(nickname) {
+  account.value = { ...account.value, nickname }   // 顶栏那颗 pill 要立刻跟上
 }
 
 function onSignedOut() {
   account.value = null
   budgetLeft.value = null
+  budgetTotal.value = null
   result.value = null
   history.value = []
   stats.value = {}
   runId.value = ''
+  tab.value = 'report'    // 退出回首页：重新登录后落在体检报告，而不是停在个人中心
 }
 
 function switchTab(k) {
@@ -381,7 +405,7 @@ async function poll(jobId) {
       result.value = job.result
       runId.value = job.run_id || ''
       quotaOut.value = !!job.result?.meta?.quota_exhausted
-      if (authOn.value) budgetLeft.value = (await me()).budget_left ?? budgetLeft.value
+      if (authOn.value) await refreshSession()
       await refreshLists()
       return
     }

@@ -19,7 +19,7 @@ from pathlib import Path
 
 from .config import settings
 
-DDL = """
+DDL_TABLES = """
 CREATE TABLE IF NOT EXISTS runs(
   id TEXT PRIMARY KEY, created_at TEXT, updated_at TEXT, run_count INTEGER,
   lat REAL, lng REAL, label TEXT, archetype TEXT, mode TEXT, score INTEGER,
@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS agent_runs(
 CREATE TABLE IF NOT EXISTS traces(
   id INTEGER PRIMARY KEY AUTOINCREMENT, agent_id TEXT, seq INTEGER, tool TEXT,
   args TEXT, summary TEXT, latency_ms INTEGER, decision TEXT, created_at TEXT);
+"""
+
+DDL_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_bs_run ON blindspots(run_id);
 CREATE INDEX IF NOT EXISTS idx_cov_run ON coverage(run_id);
 CREATE INDEX IF NOT EXISTS idx_trace_agent ON traces(agent_id);
@@ -66,8 +69,12 @@ def _open() -> sqlite3.Connection:
     Path(str(Path(settings.db_path).parent)).mkdir(parents=True, exist_ok=True)
     c = sqlite3.connect(settings.db_path, timeout=15)
     c.row_factory = sqlite3.Row
-    c.executescript(DDL)
+    c.executescript(DDL_TABLES)
     _ensure_owner_columns(c)
+    # 索引必须在补列之后建：老库的 runs 表当时没有 user_id，
+    # 早一步 CREATE INDEX ... ON runs(user_id) 就是 "no such column: user_id"，
+    # 而这个函数每次请求都会跑，等于整个服务对老档案直接 500。
+    c.executescript(DDL_INDEXES)
     return c
 
 

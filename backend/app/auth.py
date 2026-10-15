@@ -203,11 +203,21 @@ class Principal:
     email: str
     nickname: str
     store_keys: bool
+    created_at: datetime | None = None
+    last_login_at: datetime | None = None
 
     @property
     def cache_subdir(self) -> str:
         # 缓存按用户分目录：全局共享会把 A 的真实结果直接喂给 B
         return f"u{self.id}"
+
+    def public(self) -> dict:
+        """给前端看的自身资料；不含口令、也不含密钥明文（只有掩码归 /api/config 管）。"""
+        return {"id": self.id, "email": self.email, "nickname": self.nickname,
+                "store_keys": self.store_keys,
+                "created_at": self.created_at.strftime("%Y-%m-%d %H:%M") if self.created_at else None,
+                "last_login_at": (self.last_login_at.strftime("%Y-%m-%d %H:%M")
+                                  if self.last_login_at else None)}
 
 
 def create_user(email: str, raw_pass: str, nickname: str = "", ip: str = "") -> int:
@@ -238,6 +248,14 @@ def touch_login(user_id: int) -> None:
         cur.execute("UPDATE users SET last_login_at=%s WHERE id=%s", (_now(), user_id))
 
 
+def set_nickname(user_id: int, nickname: str) -> str:
+    """只改显示名。邮箱是登录凭据、口令走独立流程，都不在这里动。"""
+    clean = (nickname or "").strip()[:60]
+    with connect() as c, c.cursor() as cur:
+        cur.execute("UPDATE users SET nickname=%s WHERE id=%s", (clean, user_id))
+    return clean
+
+
 def open_session(user_id: int, ip: str = "") -> str:
     token, token_hash = new_session_token()
     expires = _now() + timedelta(days=settings.session_days)
@@ -254,8 +272,8 @@ def resolve_session(signed: str) -> Principal | None:
         return None
     with connect() as c, c.cursor() as cur:
         cur.execute(
-            "SELECT u.id, u.email, u.nickname, u.store_keys FROM sessions s "
-            "JOIN users u ON u.id = s.user_id "
+            "SELECT u.id, u.email, u.nickname, u.store_keys, u.created_at, u.last_login_at "
+            "FROM sessions s JOIN users u ON u.id = s.user_id "
             "WHERE s.token_hash=%s AND s.expires_at > %s AND u.status='active'",
             (hashlib.sha256(token.encode("utf-8")).hexdigest(), _now()))
         row = cur.fetchone()

@@ -2,13 +2,15 @@
 
 覆盖：scene_key 就地更新、历史回放零出网、跨社区对比差值、累计统计、
 人群步速换算方向（老人可达面积必须小于成人）、顶点来源标签、证据指纹、
-检索查全判据与 Markdown 报告结构。CI 与本地均可直接运行：
+检索查全判据与 Markdown 报告结构，以及"多用户之前的老库能否自动补列打开"。
+CI 与本地均可直接运行：
     python backend/tests/test_persistence_offline.py
 """
 
 import asyncio
 import os
 import shutil
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -89,6 +91,36 @@ async def main():
 
     # 8) 删除
     ok &= check("删除后历史为空", db.delete_run(rid) and not db.get_run(rid))
+
+    # 9) 老库自动迁移：多用户之前建的 SQLite 里 runs 表没有 user_id/public，
+    #    而 _open() 每次请求都会执行 DDL。曾经索引建在补列之前，
+    #    "no such column: user_id" 直接把 /api/health 打成 500——这条就是钉住那个顺序
+    legacy = DBDIR / "legacy.db"
+    DBDIR.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(legacy) as lc:
+        lc.execute("CREATE TABLE runs(id TEXT PRIMARY KEY, created_at TEXT, updated_at TEXT, "
+                   "run_count INTEGER, lat REAL, lng REAL, label TEXT, archetype TEXT, mode TEXT, "
+                   "score INTEGER, elapsed REAL, api_calls INTEGER, cache_hits INTEGER, "
+                   "quota_units INTEGER, degraded INTEGER, payload TEXT)")
+        lc.execute("CREATE TABLE agent_runs(id TEXT PRIMARY KEY, created_at TEXT, question TEXT, "
+                   "model TEXT, mode TEXT, steps INTEGER, api_calls INTEGER, answer TEXT, center TEXT)")
+        lc.execute("INSERT INTO runs(id,run_count,label,mode,score,payload) "
+                   "VALUES('old-1',1,'老社区','mock',88,'{\"label\": \"老社区\"}')")
+    saved_path, settings.db_path = settings.db_path, str(legacy)
+    try:
+        st = db.stats()
+        ok &= check("老库无需手工迁移就能打开（曾 500）", st["communities"] == 1, str(st["communities"]))
+        ok &= check("统计与平均分仍读得到", st["avg_score"] == 88, str(st["avg_score"]))
+        with db._open() as lc:
+            cols = {r["name"] for r in lc.execute("PRAGMA table_info(runs)")}
+            idx = {r["name"] for r in lc.execute("PRAGMA index_list(runs)") if r["name"]}
+            old = lc.execute("SELECT user_id, public FROM runs WHERE id='old-1'").fetchone()
+        ok &= check("归属列已补齐", {"user_id", "public"} <= cols, sorted(cols - {"payload"}))
+        ok &= check("user_id 索引确实建上了（补列在建索引之前）", "idx_runs_user" in idx, sorted(idx))
+        ok &= check("老记录归属为空，视为单机时期数据", old["user_id"] is None and old["public"] == 0)
+        ok &= check("老档案仍可按 id 回放", db.get_run("old-1")["label"] == "老社区")
+    finally:
+        settings.db_path = saved_path
 
     print("\n== 结果：", "全部通过 ==" if ok else "存在失败 ==")
     return ok
