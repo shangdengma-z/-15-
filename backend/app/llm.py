@@ -15,6 +15,7 @@ from pathlib import Path
 
 import httpx
 
+from . import scope
 from .config import settings
 
 log = logging.getLogger("llm")
@@ -59,15 +60,18 @@ class LLMClient:
 
     @property
     def enabled(self) -> bool:
-        return bool(settings.llm_api_key)
+        # 多用户下 key 来自请求；单机时回落到 .env
+        return bool(scope.cred("llm_key", settings.llm_api_key))
 
     def _cache_path(self, payload: dict) -> Path:
         key = hashlib.md5(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-        return self.cache_dir / f"llm_{settings.llm_model}_{key}.json"
+        model = scope.cred("llm_model", settings.llm_model)
+        return scope.under(self.cache_dir) / f"llm_{model}_{key}.json"
 
     async def chat(self, messages: list, tools: list | None = None) -> dict:
         """返回 assistant 消息体（可能含 tool_calls）。"""
-        payload = {"model": settings.llm_model, "messages": messages, "temperature": 0.3}
+        payload = {"model": scope.cred("llm_model", settings.llm_model),
+                   "messages": messages, "temperature": 0.3}
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
@@ -79,8 +83,8 @@ class LLMClient:
         if not self.enabled:
             raise LLMError("LLM_API_KEY 未配置")
 
-        url = settings.llm_base_url.rstrip("/") + "/chat/completions"
-        headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
+        url = scope.cred("llm_base", settings.llm_base_url).rstrip("/") + "/chat/completions"
+        headers = {"Authorization": f"Bearer {scope.cred('llm_key', settings.llm_api_key)}"}
         last_err: Exception | None = None
         for attempt in range(3):
             try:

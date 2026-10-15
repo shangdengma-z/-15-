@@ -24,20 +24,22 @@ CREATE TABLE IF NOT EXISTS runs(
   id TEXT PRIMARY KEY, created_at TEXT, updated_at TEXT, run_count INTEGER,
   lat REAL, lng REAL, label TEXT, archetype TEXT, mode TEXT, score INTEGER,
   elapsed REAL, api_calls INTEGER, cache_hits INTEGER, quota_units INTEGER,
-  degraded INTEGER, payload TEXT);
+  degraded INTEGER, payload TEXT,
+  user_id INTEGER, public INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS blindspots(
   run_id TEXT, lat REAL, lng REAL, items TEXT, verified INTEGER);
 CREATE TABLE IF NOT EXISTS coverage(
   run_id TEXT, cat TEXT, name TEXT, inside INTEGER, total INTEGER);
 CREATE TABLE IF NOT EXISTS agent_runs(
   id TEXT PRIMARY KEY, created_at TEXT, question TEXT, model TEXT, mode TEXT,
-  steps INTEGER, api_calls INTEGER, answer TEXT, center TEXT);
+  steps INTEGER, api_calls INTEGER, answer TEXT, center TEXT, user_id INTEGER);
 CREATE TABLE IF NOT EXISTS traces(
   id INTEGER PRIMARY KEY AUTOINCREMENT, agent_id TEXT, seq INTEGER, tool TEXT,
   args TEXT, summary TEXT, latency_ms INTEGER, decision TEXT, created_at TEXT);
 CREATE INDEX IF NOT EXISTS idx_bs_run ON blindspots(run_id);
 CREATE INDEX IF NOT EXISTS idx_cov_run ON coverage(run_id);
 CREATE INDEX IF NOT EXISTS idx_trace_agent ON traces(agent_id);
+CREATE INDEX IF NOT EXISTS idx_runs_user ON runs(user_id);
 """
 
 POI_KEEP = 40   # 每类最多留 40 个设施要点：够地图回放渲染，又不至于把库撑大
@@ -46,9 +48,14 @@ ANSWER_KEEP = 4000
 NOW = lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def scene_key(center: tuple, mode: str) -> str:
-    """同一坐标（小数点后 4 位内，约 11m）+ 同一数据模式视为同一社区。"""
-    return f"{mode}-{round(center[0], 4)}-{round(center[1], 4)}"
+def scene_key(center: tuple, mode: str, user_id: int | None = None) -> str:
+    """同一坐标（小数点后 4 位内，约 11m）+ 同一数据模式视为同一社区。
+
+    多用户下前缀 `u<id>-`：同一个社区由两个人各自体检时是两份独立档案，
+    否则 A 的档案会被 B 的就地更新覆盖掉。
+    """
+    base = f"{mode}-{round(center[0], 4)}-{round(center[1], 4)}"
+    return f"u{user_id}-{base}" if user_id else base
 
 
 def new_id(prefix: str = "") -> str:
@@ -60,29 +67,42 @@ def _open() -> sqlite3.Connection:
     c = sqlite3.connect(settings.db_path, timeout=15)
     c.row_factory = sqlite3.Row
     c.executescript(DDL)
+    _ensure_owner_columns(c)
     return c
 
 
-def save_run(result: dict, label: str = "", archetype: str = "") -> str:
+def _ensure_owner_columns(c: sqlite3.Connection) -> None:
+    """老库（多用户之前建的）补上归属列；老记录 user_id 为空，视为单机时期数据。"""
+    have = {r["name"] for r in c.execute("PRAGMA table_info(runs)")}
+    if "user_id" not in have:
+        c.execute("ALTER TABLE runs ADD COLUMN user_id INTEGER")
+    if "public" not in have:
+        c.execute("ALTER TABLE runs ADD COLUMN public INTEGER NOT NULL DEFAULT 0")
+    agent_cols = {r["name"] for r in c.execute("PRAGMA table_info(agent_runs)")}
+    if "user_id" not in agent_cols:
+        c.execute("ALTER TABLE agent_runs ADD COLUMN user_id INTEGER")
+
+
+def save_run(result: dict, label: str = "", archetype: str = "", user_id: int | None = None) -> str:
     """写入（或就地更新）一次体检结果，并把盲区/覆盖率展开成可查询列。"""
     meta = result.get("meta", {})
     center = result.get("center", {})
     # 降级是数据质量标记（单独成列），不该把同一个社区裂成两条 scene_key 档案
     mode = "mock" if meta.get("mock") else "real"
-    run_id = scene_key((center.get("lat", 0), center.get("lng", 0)), mode)
+    run_id = scene_key((center.get("lat", 0), center.get("lng", 0)), mode, user_id)
     now = NOW()
     with closing(_open()) as c, c:
         prev = c.execute("SELECT created_at, run_count FROM runs WHERE id=?", (run_id,)).fetchone()
         c.execute(
             "INSERT OR REPLACE INTO runs(id,created_at,updated_at,run_count,lat,lng,label,archetype,"
-            "mode,score,elapsed,api_calls,cache_hits,quota_units,degraded,payload) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "mode,score,elapsed,api_calls,cache_hits,quota_units,degraded,payload,user_id) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (run_id, prev["created_at"] if prev else now, now, (prev["run_count"] if prev else 0) + 1,
              center.get("lat"), center.get("lng"),
              label or f"{center.get('lat', 0):.4f},{center.get('lng', 0):.4f}", archetype, mode,
              result.get("health_score"), meta.get("elapsed_sec"), meta.get("api_calls"),
              meta.get("cache_hits"), meta.get("quota_units"), 1 if meta.get("degraded") else 0,
-             json.dumps(_slim(result), ensure_ascii=False)))
+             json.dumps(_slim(result), ensure_ascii=False), user_id))
         c.execute("DELETE FROM blindspots WHERE run_id=?", (run_id,))
         c.execute("DELETE FROM coverage WHERE run_id=?", (run_id,))
         for b in result.get("blindspots", []):
@@ -95,19 +115,19 @@ def save_run(result: dict, label: str = "", archetype: str = "") -> str:
     return run_id
 
 
-def save_agent_run(out: dict, question: str, center: tuple | None = None) -> str:
+def save_agent_run(out: dict, question: str, center: tuple | None = None, user_id: int | None = None) -> str:
     """存一次智能体问答，并把工具调用轨迹落进 traces（决策可回放，不是黑箱）。"""
     aid = new_id()
     now = NOW()
     llm_mode = out.get("mode") == "llm"
     with closing(_open()) as c, c:
         c.execute(
-            "INSERT INTO agent_runs(id,created_at,question,model,mode,steps,api_calls,answer,center)"
-            " VALUES(?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO agent_runs(id,created_at,question,model,mode,steps,api_calls,answer,center,"
+            "user_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
             (aid, now, question[:300], settings.llm_model if llm_mode else "rule",
              "llm" if llm_mode else "rule", len(out.get("steps") or []),
              out.get("api_calls", 0), (out.get("reply") or "")[:ANSWER_KEEP],
-             json.dumps(list(center) if center else [])))
+             json.dumps(list(center) if center else []), user_id))
         for i, s in enumerate(out.get("steps") or []):
             c.execute("INSERT INTO traces(agent_id,seq,tool,args,summary,latency_ms,decision,created_at)"
                       " VALUES(?,?,?,?,?,?,?,?)",
@@ -124,47 +144,65 @@ def agent_trace(agent_id: str) -> list:
     return [dict(r) for r in rows]
 
 
-def list_runs(limit: int = 50) -> list:
-    with closing(_open()) as c:
-        rows = c.execute(
-            "SELECT r.id,r.created_at,r.updated_at,r.run_count,r.lat,r.lng,r.label,r.archetype,"
-            "r.mode,r.score,r.elapsed,r.api_calls,r.cache_hits,r.quota_units,r.degraded,"
+def list_runs(limit: int = 50, user_id: int | None = None, enforce: bool = False) -> list:
+    """给了 user_id 就只回这个人的档案；没给（单机模式）回全部。"""
+    where, args = "", [limit]
+    cols = ("r.id,r.created_at,r.updated_at,r.run_count,r.lat,r.lng,r.label,r.archetype,"
+            "r.mode,r.score,r.elapsed,r.api_calls,r.cache_hits,r.quota_units,r.degraded,r.public,"
             "(SELECT COUNT(*) FROM blindspots b WHERE b.run_id=r.id AND b.verified=1) AS verified_bs,"
-            "(SELECT COUNT(*) FROM coverage v WHERE v.run_id=r.id AND v.inside=0) AS empty_cats "
-            "FROM runs r ORDER BY r.updated_at DESC LIMIT ?", (limit,)).fetchall()
+            "(SELECT COUNT(*) FROM coverage v WHERE v.run_id=r.id AND v.inside=0) AS empty_cats")
+    with closing(_open()) as c:
+        if enforce:
+            where = "WHERE (r.user_id IS ? OR r.public=1)" if user_id is not None else "WHERE r.public=1"
+            args = ([user_id, limit] if user_id is not None else [limit])
+        rows = c.execute(
+            f"SELECT {cols} FROM runs r {where} ORDER BY r.updated_at DESC LIMIT ?", args).fetchall()
     return [dict(r) for r in rows]
 
 
-def get_run(run_id: str) -> dict | None:
+def get_run(run_id: str, user_id: int | None = None, enforce: bool = False) -> dict | None:
+    """user_id 非空时做归属校验：不是自己的、且没勾"公开"的档案一律当作不存在（404 而非 403，
+    免得把"这条记录存在"这件事泄漏出去）。"""
     with closing(_open()) as c:
-        row = c.execute("SELECT payload FROM runs WHERE id=?", (run_id,)).fetchone()
-    return json.loads(row["payload"]) if row else None
+        row = c.execute("SELECT payload, user_id, public FROM runs WHERE id=?", (run_id,)).fetchone()
+    if not row:
+        return None
+    if enforce and (user_id is None or row["user_id"] != user_id) and not row["public"]:
+        return None
+    return json.loads(row["payload"])
 
 
-def find_scene_run(center: tuple) -> dict | None:
+def find_scene_run(center: tuple, user_id: int | None = None, enforce: bool = False) -> dict | None:
     """按坐标取已建档的体检结果，供选址等下游能力复用——不再重跑一遍烧配额。"""
     for mode in ("real", "real+降级", "mock"):   # 中间一项兼容修键之前留下的旧记录
-        payload = get_run(scene_key(center, mode))
+        payload = get_run(scene_key(center, mode, user_id), user_id, enforce)
         if payload:
             return payload
     return None
 
 
-def delete_run(run_id: str) -> bool:
+def delete_run(run_id: str, user_id: int | None = None, enforce: bool = False) -> bool:
+    """只能删自己的；公开与否都不允许删别人的档案。"""
     with closing(_open()) as c, c:
+        if enforce:
+            owner = c.execute("SELECT user_id FROM runs WHERE id=?", (run_id,)).fetchone()
+            if not owner or owner["user_id"] != user_id:
+                return False
         n = c.execute("DELETE FROM runs WHERE id=?", (run_id,)).rowcount
         c.execute("DELETE FROM blindspots WHERE run_id=?", (run_id,))
         c.execute("DELETE FROM coverage WHERE run_id=?", (run_id,))
     return bool(n)
 
 
-def compare(run_ids: list) -> dict:
+def compare(run_ids: list, user_id: int | None = None, enforce: bool = False) -> dict:
     """跨社区对比：只回派生指标与逐类别差值，前端一张表就能看出形态差异。"""
     with closing(_open()) as c:
         items = []
         for rid in run_ids:
-            row = c.execute("SELECT id,label,archetype,mode,score,lat,lng,updated_at FROM runs "
-                            "WHERE id=?", (rid,)).fetchone()
+            row = c.execute("SELECT id,label,archetype,mode,score,lat,lng,updated_at,user_id,public "
+                            "FROM runs WHERE id=?", (rid,)).fetchone()
+            if row and enforce and (user_id is None or row["user_id"] != user_id)                     and not row["public"]:
+                continue
             if not row:
                 continue
             cov = c.execute("SELECT cat,name,inside,total FROM coverage WHERE run_id=?",
@@ -188,25 +226,60 @@ def compare(run_ids: list) -> dict:
         return {"runs": items, "diff": sorted(diffs, key=lambda x: x["delta"])}
 
 
-def list_agent_runs(limit: int = 20) -> list:
+def list_agent_runs(limit: int = 20, user_id: int | None = None, enforce: bool = False) -> list:
+    sql = "SELECT id,created_at,question,model,mode,steps,api_calls,answer FROM agent_runs"
+    args: list = []
+    if enforce:
+        sql += " WHERE user_id IS ?" if user_id is not None else " WHERE 0"
+        if user_id is not None:
+            args.append(user_id)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    args.append(limit)
     with closing(_open()) as c:
-        rows = c.execute("SELECT id,created_at,question,model,mode,steps,api_calls,answer "
-                         "FROM agent_runs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        rows = c.execute(sql, args).fetchall()
     return [dict(r) for r in rows]
 
 
-def stats() -> dict:
-    """累计观测：把「缓存复用 + 历史回放省下的配额」变成屏幕上能指给评委看的数字。"""
+def agent_owner(agent_id: str) -> int | None:
     with closing(_open()) as c:
-        r = c.execute("SELECT COUNT(*) n, AVG(score) avg_s, MIN(score) min_s, MAX(score) max_s, "
-                      "SUM(api_calls) calls, SUM(cache_hits) hits, SUM(elapsed) secs, "
-                      "SUM(degraded) degraded_runs, SUM(quota_units) quota, "
-                      "SUM(run_count) total_runs FROM runs").fetchone()
-        bs = c.execute("SELECT COUNT(*) n, SUM(verified) v FROM blindspots").fetchone()
-        cats = c.execute("SELECT name, SUM(inside=0) missing, COUNT(*) total FROM coverage "
-                         "GROUP BY name ORDER BY missing DESC").fetchall()
-        agent = c.execute("SELECT COUNT(*) n, SUM(mode='llm') llm FROM agent_runs").fetchone()
-        tr = c.execute("SELECT COUNT(*) n, SUM(latency_ms) ms FROM traces").fetchone()
+        row = c.execute("SELECT user_id FROM agent_runs WHERE id=?", (agent_id,)).fetchone()
+    return None if not row else row["user_id"]
+
+
+def set_public(run_id: str, flag: bool, user_id: int | None = None) -> bool:
+    """勾选/取消"公开只读"；只有归属者能改。"""
+    with closing(_open()) as c, c:
+        n = c.execute("UPDATE runs SET public=? WHERE id=? AND (user_id IS ? OR ? IS NULL)",
+                      (1 if flag else 0, run_id, user_id, user_id)).rowcount
+    return bool(n)
+
+
+def stats(user_id: int | None = None, enforce: bool = False) -> dict:
+    """累计观测：把「缓存复用 + 历史回放省下的配额」变成屏幕上能指给评委看的数字。
+
+    多用户下必须按人统计，否则任何人登录后都能看到全站的调用量与平均分。
+    """
+    own = ("WHERE user_id IS ?" if user_id is not None else "WHERE 0") if enforce else ""
+    own_args: list = [user_id] if user_id is not None else []
+    run_ids = "SELECT id FROM runs " + own
+    j = jv = ""
+    with closing(_open()) as c:
+        if enforce and user_id is not None:      # enforce 且匿名时不过滤：查询自带 WHERE 0
+            c.execute("CREATE TEMP TABLE _own AS " + run_ids, own_args)
+            j = "JOIN _own o ON o.id = b.run_id"
+            jv = "JOIN _own o ON o.id = v.run_id"
+        sel = ("SELECT COUNT(*) n, AVG(score) avg_s, MIN(score) min_s, MAX(score) max_s, "
+               "SUM(api_calls) calls, SUM(cache_hits) hits, SUM(elapsed) secs, "
+               "SUM(degraded) degraded_runs, SUM(quota_units) quota, SUM(run_count) total_runs FROM runs {}")
+        r = c.execute(sel.format(own), own_args).fetchone()
+        bs = c.execute("SELECT COUNT(*) n, SUM(b.verified) v FROM blindspots b " + j).fetchone()
+        cats = c.execute("SELECT v.name, SUM(v.inside=0) missing, COUNT(*) total FROM coverage v "
+                         + jv + " GROUP BY v.name ORDER BY missing DESC").fetchall()
+        a_where = ("WHERE a.user_id IS ?" if user_id is not None else "WHERE 0") if enforce else ""
+        agent = c.execute("SELECT COUNT(*) n, SUM(mode='llm') llm FROM agent_runs a " + a_where,
+                          own_args).fetchone()
+        tr = c.execute("SELECT COUNT(*) n, SUM(t.latency_ms) ms FROM traces t "
+                       "JOIN agent_runs a ON a.id = t.agent_id " + a_where, own_args).fetchone()
     hits = r["hits"] or 0
     return {
         "communities": r["n"] or 0,

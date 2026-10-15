@@ -13,6 +13,7 @@ import math
 import statistics
 import time
 
+from . import scope
 from .baidu_client import client, straight_line_m
 from .config import CATEGORIES, REQUIRED_CATEGORIES, settings
 from .db import fingerprint
@@ -349,8 +350,11 @@ async def run_analysis(center: tuple) -> dict:
             "degraded": client.degraded,
             "retry_count": client.retry_count,
             "matrix_fallback": not client.matrix_ok,
-            "mock": settings.mock,
-            "data_mode": "mock" if settings.mock else ("real+degraded" if client.degraded else "real"),
+            # 用请求级 mock：多用户下演示模式是按请求（X-Demo-Mode）生效的，
+            # 读进程级 settings.mock 会让合成结果被标成"真实路网"。
+            "mock": scope.mock_mode(settings.mock),
+            "data_mode": "mock" if scope.mock_mode(settings.mock)
+            else ("real+degraded" if client.degraded else "real"),
             "sampling": {"rays": settings.rays, "radii": [int(x) for x in settings.sample_radii.split(",")],
                          "grid_step_m": GRID_STEP_M, "max_candidates": settings.max_candidates,
                          "verify_nearest": settings.verify_nearest},

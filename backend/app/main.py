@@ -7,12 +7,12 @@ import asyncio
 import time
 import uuid
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
-from . import db
+from . import auth, authapi, db, scope
 from .advisor import BIZ_TYPES, advise
 from .agent import run_agent
 from .analysis import run_analysis
@@ -23,10 +23,20 @@ from .llm import llm
 from .report import to_markdown
 
 app = FastAPI(title="15分钟生活圈体检助手", version="0.2.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.include_router(authapi.router)
+
+# 单机开发时前端在 :5173、后端在 :8000，必须放开跨域；
+# 上线（AUTH_ENABLED=1）走 nginx 同源，CORS_ORIGINS 填自己的域名即可收窄。
+_ALLOWED = [o.strip() for o in settings.cors_origins.split(",") if o.strip()] or ["*"]
+app.add_middleware(CORSMiddleware, allow_origins=_ALLOWED, allow_methods=["*"],
+                   allow_headers=["*"], allow_credentials="*" not in _ALLOWED)
 
 JOBS: dict = {}
 AGENT_JOBS: dict = {}
+
+# 全局并发闸：一次体检是 180+ 次上游请求 + 8 秒等待，2C2G 上不设闸会被十几个并发打满
+JOB_SLOTS = asyncio.Semaphore(max(1, settings.job_slots))
+
 
 
 class AnalysisRequest(BaseModel):
@@ -64,6 +74,52 @@ async def metering_headers(request: Request, call_next):
     return response
 
 
+@app.middleware("http")
+async def auth_gate(request: Request, call_next):
+    """解析会话 → 设定请求级缓存与凭据 → 必要时拦未登录与跨站请求。
+
+    AUTH_ENABLED=0 时整段直接放行，单机演示与交付路径的行为、缓存命中都保持不变。
+    """
+    if not settings.auth_enabled:
+        return await call_next(request)
+    uid = None
+    principal = auth.resolve_session(request.cookies.get(authapi.SID_COOKIE, ""))
+    if principal:
+        uid = principal.id
+        scope.set_scope(principal.cache_subdir)
+        creds = auth.user_secrets(principal.id) if principal.store_keys else {}
+        scope.set_creds(ak=creds.get("bmap_ak", ""), sk=creds.get("bmap_sk", ""),
+                        llm_key=creds.get("llm_key", ""), llm_base=creds.get("llm_base_url", ""),
+                        llm_model=creds.get("llm_model", ""))
+        # 额度只管"会烧配重的写接口"。用一句 budget<=0 拦住全部写操作是错的：
+        # 那样当天跑满的人连"保存自己的 AK""取消公开分享"都点不动，只能干等明天。
+        heavy = request.method != "GET" and request.url.path.startswith(("/api/analysis", "/api/agent"))
+        if heavy and auth.budget_left(principal.id) <= 0:
+            return JSONResponse(status_code=429, content={"detail": "今日分析额度已用完，明天再来或缩短演示"})
+    # 请求头里的 key 优先于账户里保存的：默认密钥只待在浏览器
+    h = request.headers
+    if h.get("x-bmap-ak") or h.get("x-llm-key") or h.get("x-demo-mode"):
+        prev = scope.snapshot_creds()
+        scope.set_creds(ak=h.get("x-bmap-ak", prev.get("ak", "")),
+                        sk=h.get("x-bmap-sk", prev.get("sk", "")),
+                        llm_key=h.get("x-llm-key", prev.get("llm_key", "")),
+                        llm_base=h.get("x-llm-base", prev.get("llm_base", "")),
+                        llm_model=h.get("x-llm-model", prev.get("llm_model", "")),
+                        mock=(h.get("x-demo-mode") == "1") if h.get("x-demo-mode") else prev.get("mock"))
+    request.state.uid = uid
+    request.state.principal = principal
+    if authapi.is_protected(request.url.path, request.method):
+        if principal is None:
+            return JSONResponse(status_code=401, content={"detail": "请先登录"})
+        same_site = (h.get("sec-fetch-site") or "").lower()
+        if not same_site == "same-origin" and not auth.csrf_ok(
+                request.cookies.get(authapi.SID_COOKIE, ""),
+                request.cookies.get(authapi.CSRF_COOKIE, ""),
+                h.get(authapi.CSRF_HEADER, "")):
+            return JSONResponse(status_code=403, content={"detail": "CSRF 校验未通过，请刷新页面重试"})
+    return await call_next(request)
+
+
 @app.get("/api/health")
 async def health():
     stats = await asyncio.to_thread(db.stats)
@@ -83,6 +139,8 @@ class ConfigRequest(BaseModel):
     qps: float | None = Field(None, gt=0, le=100)
     concurrency: int | None = Field(None, ge=1, le=32)
     verify: bool = True      # 默认校验：填了密钥就真发一次探测请求，不用等体检时才报错
+    # 多用户模式下密钥的去向：不传 = 只留在这个浏览器；true = 加密存入本账户；false = 清掉账户里的密文
+    store_keys: bool | None = None
 
 
 # 只记录「这个字段是运行时填的还是来自 .env」，密钥本身不留副本、不写文件、不进日志
@@ -110,14 +168,48 @@ def _config_view() -> dict:
                     "key_source": src("llm_api_key")}}
 
 
+def _user_config_view(request: Request, stored: bool | None = None,
+                      creds: dict | None = None) -> dict:
+    """多用户模式下的接入配置：数据来自当前请求的凭据（浏览器带来的或账户里加密存的）。
+
+    不能读 settings —— 那是进程级全局，上线时要么为空、要么属于部署者，
+    把它显示给所有用户等于告诉 B "你的 AK 是别人的"。掩码后的值只回给本人，够用。
+
+    stored/creds 显式传入是给"刚保存完"的那次响应用的：本请求解析会话时改动还没写进库，
+    不覆盖就会回一句"未配置"，用户看不出自己刚才是保存成功了。
+    """
+    p = getattr(request.state, "principal", None)
+    c = creds or scope.snapshot_creds()
+    stored = bool(p and p.store_keys) if stored is None else stored
+
+    def src(v: str) -> str:
+        return ("store" if stored else "browser") if v else "empty"
+
+    ak, llm_key = c.get("ak") or "", c.get("llm_key") or ""
+    mode = "mock" if scope.mock_mode(settings.mock) else "real"
+    return {"mode": mode, "mock": mode == "mock", "auth": True, "scope": "user",
+            "qps": settings.qps, "concurrency": settings.concurrency, "qps_source": "env",
+            "quota_exhausted": client.quota_exhausted,
+            "account": None if p is None else {"id": p.id, "email": p.email,
+                                               "nickname": p.nickname, "store_keys": p.store_keys,
+                                               "budget_left": auth.budget_left(p.id)},
+            "bmap": {"ak_masked": _mask(ak), "ak_source": src(ak),
+                     "sk_set": bool(c.get("sk")), "sk_source": src(c.get("sk") or "")},
+            "llm": {"configured": bool(llm_key), "model": c.get("llm_model") or settings.llm_model,
+                    "base_url": c.get("llm_base") or settings.llm_base_url,
+                    "key_masked": _mask(llm_key), "key_source": src(llm_key)}}
+
+
 @app.get("/api/config")
-async def get_config():
+async def get_config(request: Request):
     """当前接入配置（密钥一律掩码返回，只告诉你哪一项已配置、来自哪里）。"""
+    if settings.auth_enabled:
+        return _user_config_view(request)
     return _config_view()
 
 
 @app.post("/api/config")
-async def set_config(req: ConfigRequest):
+async def set_config(request: Request, req: ConfigRequest):
     """运行时切换演示/应用模式、替换百度 AK 与大模型 key。
 
     刻意只改内存：进程重启就回到 .env 的值，密钥不落盘、不写日志、不回显明文。
@@ -144,6 +236,40 @@ async def set_config(req: ConfigRequest):
         checks["llm"] = {"ok": ok, "detail": detail}
         if not ok:
             raise HTTPException(422, f"大模型配置校验未通过：{detail}")
+
+    if settings.auth_enabled:
+        # settings 是进程级全局：多用户下写它等于把 A 的 key 借给 B 用。
+        # 因此这里只做"校验（上面已完成）+ 按用户意愿决定去向"，
+        # 数据模式与限流属部署级配置，只能由 .env 决定。
+        uid = getattr(request.state, "uid", None)
+        if uid is None:
+            raise HTTPException(401, "请先登录")
+        if req.mode is not None or req.qps is not None or req.concurrency is not None:
+            raise HTTPException(403, "多用户模式下数据模式与限流是部署级配置，只能在 .env 里改")
+        if not (new_ak or new_llm_key or new_base or new_model) and req.store_keys is None:
+            raise HTTPException(422, "没有要保存的内容")
+        # 默认不入库：明文只存在这个浏览器的 localStorage 里，随请求头带上。
+        # 用户主动勾"加密保存到本账户"（store_keys=true）才交给服务端用 MASTER_KEY 加密存列；
+        # store_keys=false 是明确关掉：把列清空，否则"取消保存"只是句空话。
+        store = bool(req.store_keys)
+        keep_ak = (new_ak or "") if store else ""
+        keep_sk = ((req.server_sk or "").strip()) if store else ""
+        keep_llm = (new_llm_key or "") if store else ""
+
+        def _persist():
+            auth.save_user_secrets(uid, ak=keep_ak, sk=keep_sk, llm_key=keep_llm,
+                                   base_url=new_base or "", model=new_model or "", store=store)
+            # 刚写进库的那份才是这次要显示的状态：本请求解析会话时它还不存在
+            return auth.user_secrets(uid) if store else None
+
+        row = await asyncio.to_thread(_persist)
+        view = _user_config_view(request, stored=store, creds=None if row is None else {
+            "ak": row["bmap_ak"], "sk": row["bmap_sk"], "llm_key": row["llm_key"],
+            "llm_base": row["llm_base_url"], "llm_model": row["llm_model"]})
+        view["stored"] = store
+        if req.verify:
+            view["verified"] = checks
+        return view
 
     if req.mode is not None:
         ak = new_ak or settings.server_ak
@@ -181,7 +307,7 @@ async def set_config(req: ConfigRequest):
 
 
 @app.post("/api/config/verify")
-async def verify_config(req: ConfigRequest):
+async def verify_config(request: Request, req: ConfigRequest):
     """只测不落地：面板上的「先测一下」按钮走这里。"""
     out = {}
     if req.server_ak:
@@ -198,54 +324,83 @@ async def verify_config(req: ConfigRequest):
 
 
 @app.get("/api/communities")
-async def communities():
+async def communities(request: Request):
     """预设典型社区（覆盖城乡结合部/老旧小区等赛题点名形态）+ 本机已体检过的历史社区。"""
     presets = [{**p, "lat": p["lat"], "lng": p["lng"]} for p in PRESET_COMMUNITIES]
-    history = await asyncio.to_thread(db.list_runs, 30)
+    # enforce=登录开着：只回自己的 + 勾了公开的；单机模式下 uid 为 None 且不过滤
+    enforce, uid = settings.auth_enabled, getattr(request.state, "uid", None)
+    history = await asyncio.to_thread(lambda: db.list_runs(30, uid, enforce))
     return {"presets": presets,
             "history": [{k: v for k, v in h.items() if k != "payload"} for h in history]}
 
 
 @app.get("/api/stats")
-async def api_stats():
-    return await asyncio.to_thread(db.stats)
+async def api_stats(request: Request):
+    uid = getattr(request.state, "uid", None)
+    enforce = settings.auth_enabled and uid is not None
+    return await asyncio.to_thread(lambda: db.stats(uid, enforce))
 
 
 @app.get("/api/runs")
-async def list_runs(limit: int = 30):
-    return await asyncio.to_thread(db.list_runs, limit)
+async def list_runs(request: Request, limit: int = 30):
+    uid = getattr(request.state, "uid", None)
+    return await asyncio.to_thread(lambda: db.list_runs(limit, uid, settings.auth_enabled))
 
 
 @app.get("/api/runs/{run_id}")
-async def get_run(run_id: str):
-    """历史回放：直接取派生结果，一次 API 都不打。"""
-    result = await asyncio.to_thread(db.get_run, run_id)
+async def get_run(request: Request, run_id: str):
+    """历史回放：直接取派生结果，一次 API 都不打。
+
+    登录开着时按归属过滤——但公开过的分享链接仍允许匿名读取，
+    不然"发条链接给评委看"就废了。
+    """
+    uid = getattr(request.state, "uid", None)
+    result = await asyncio.to_thread(lambda: db.get_run(run_id, uid, settings.auth_enabled))
     if not result:
         raise HTTPException(404, "run not found")
     return result
 
 
 @app.delete("/api/runs/{run_id}")
-async def delete_run(run_id: str):
-    ok = await asyncio.to_thread(db.delete_run, run_id)
+async def delete_run(request: Request, run_id: str):
+    uid = getattr(request.state, "uid", None)
+    ok = await asyncio.to_thread(lambda: db.delete_run(run_id, uid, settings.auth_enabled))
     return {"deleted": ok}
 
 
+class PublicRequest(BaseModel):
+    public: bool
+
+
+@app.post("/api/runs/{run_id}/public")
+async def toggle_public(request: Request, run_id: str, req: PublicRequest):
+    """勾选/取消"公开只读"，只有归属者能改。"""
+    uid = getattr(request.state, "uid", None)
+    if uid is None and settings.auth_enabled:
+        raise HTTPException(401, "请先登录")
+    ok = await asyncio.to_thread(lambda: db.set_public(run_id, req.public, uid))
+    if not ok:
+        raise HTTPException(404, "run not found 或不属于当前账号")
+    return {"id": run_id, "public": req.public}
+
+
 @app.get("/api/runs/{run_id}/report.md", response_class=PlainTextResponse)
-async def run_report(run_id: str):
-    result = await asyncio.to_thread(db.get_run, run_id)
+async def run_report(request: Request, run_id: str):
+    uid = getattr(request.state, "uid", None)
+    result = await asyncio.to_thread(lambda: db.get_run(run_id, uid, settings.auth_enabled))
     if not result:
         raise HTTPException(404, "run not found")
     return to_markdown(result)
 
 
 @app.get("/api/compare")
-async def compare(ids: str):
+async def compare(request: Request, ids: str):
     """跨社区 A/B 对比：ids=a,b，返回两份派生指标与逐类别差值。"""
     picked = [x.strip() for x in ids.split(",") if x.strip()][:3]
     if len(picked) < 2:
         raise HTTPException(422, "至少给出两个 run id")
-    return await asyncio.to_thread(db.compare, picked)
+    uid = getattr(request.state, "uid", None)
+    return await asyncio.to_thread(lambda: db.compare(picked, uid, settings.auth_enabled))
 
 
 @app.get("/api/biz-types")
@@ -256,11 +411,13 @@ async def biz_types():
 
 
 @app.post("/api/advise")
-async def advise_site(req: AdviseRequest):
+async def advise_site(request: Request, req: AdviseRequest):
     """选址建议：复用该点位已建档的体检结果，只在候选定稿后补步行实测。"""
     if req.biz not in BIZ_TYPES:
         raise HTTPException(400, f"未知业态：{req.biz}")
-    payload = await asyncio.to_thread(db.find_scene_run, (req.lat, req.lng))
+    uid = getattr(request.state, "uid", None)
+    payload = await asyncio.to_thread(
+        lambda: db.find_scene_run((req.lat, req.lng), uid, settings.auth_enabled))
     if not payload:
         raise HTTPException(409, "该点位还没有体检记录，请先跑一次体检")
     try:
@@ -270,31 +427,43 @@ async def advise_site(req: AdviseRequest):
 
 
 @app.get("/api/agent/history")
-async def agent_history(limit: int = 20):
-    return await asyncio.to_thread(db.list_agent_runs, limit)
+async def agent_history(request: Request, limit: int = 20):
+    uid = getattr(request.state, "uid", None)
+    return await asyncio.to_thread(
+        lambda: db.list_agent_runs(limit, uid, settings.auth_enabled))
 
 @app.get("/api/agent/{agent_id}/trace")
-async def agent_trace(agent_id: str):
+async def agent_trace(request: Request, agent_id: str):
+    uid = getattr(request.state, "uid", None)
+    if settings.auth_enabled:
+        owner = await asyncio.to_thread(db.agent_owner, agent_id)
+        if owner is not None and owner != uid:
+            raise HTTPException(404, "trace not found")   # 不区分"不存在"与"不是你的"
     return await asyncio.to_thread(db.agent_trace, agent_id)
 
 
 @app.post("/api/analysis")
-async def start_analysis(req: AnalysisRequest):
+async def start_analysis(request: Request, req: AnalysisRequest):
     job_id = uuid.uuid4().hex[:12]
-    JOBS[job_id] = {"status": "running", "started": time.time()}
+    uid = getattr(request.state, "uid", None)
+    if uid is not None:                     # 预算按提交计：等完成再扣的话，并发几个请求就能绕过
+        await asyncio.to_thread(auth.consume_analysis, uid)
+    JOBS[job_id] = {"status": "queued", "started": time.time(), "owner": uid}
 
     async def worker():
         try:
-            if not settings.mock and not settings.server_ak:
-                raise BmapError(-1, "BMAP_SERVER_AK 未配置")
-            result = await run_analysis((req.lat, req.lng))
-            # 名称优先用前端带的社区名（预设/手填），否则退回逆地理编码得到的行政区
-            label = req.label or result.get("label", "")
-            # 演示模式的合成结果不入库，档案里只留真实路网跑出来的记录
-            keep = req.persist and not result["meta"]["mock"]
-            run_id = await asyncio.to_thread(db.save_run, result, label, req.archetype) \
-                if keep else None
-            JOBS[job_id].update(status="done", result=result, run_id=run_id)
+            async with JOB_SLOTS:            # 全局并发闸：超出的排队，不把小机器打满
+                JOBS[job_id]["status"] = "running"
+                if not scope.mock_mode(settings.mock) and not scope.cred("ak", settings.server_ak):
+                    raise BmapError(-1, "未配置百度服务端 AK：多用户模式下请填入你自己的 AK")
+                result = await run_analysis((req.lat, req.lng))
+                # 名称优先用前端带的社区名（预设/手填），否则退回逆地理编码得到的行政区
+                label = req.label or result.get("label", "")
+                # 演示模式的合成结果不入库，档案里只留真实路网跑出来的记录
+                keep = req.persist and not result["meta"]["mock"]
+                run_id = await asyncio.to_thread(
+                    lambda: db.save_run(result, label, req.archetype, uid)) if keep else None
+                JOBS[job_id].update(status="done", result=result, run_id=run_id)
         except Exception as e:  # noqa: BLE001 - 任务态需要把任意异常回传给前端
             JOBS[job_id].update(status="error", error=str(e), degraded=client.degraded,
                                 quota_exhausted=client.quota_exhausted)
@@ -304,12 +473,14 @@ async def start_analysis(req: AnalysisRequest):
 
 
 @app.get("/api/analysis/{job_id}")
-async def get_analysis(job_id: str):
+async def get_analysis(request: Request, job_id: str):
     job = JOBS.get(job_id)
     if not job:
         raise HTTPException(404, "job not found")
-    if job["status"] == "running":
-        return {"status": "running", "elapsed": round(time.time() - job["started"], 1),
+    if settings.auth_enabled and job.get("owner") != getattr(request.state, "uid", None):
+        raise HTTPException(404, "job not found")     # 不区分"不存在"与"不是你的"
+    if job["status"] in ("running", "queued"):
+        return {"status": job["status"], "elapsed": round(time.time() - job["started"], 1),
                 "api_calls": client.calls}
     if job["status"] == "error":
         # 配额/异常降级说明：保留错误上下文供前端提示
@@ -327,11 +498,14 @@ async def preview(lat: float, lng: float, radius: int = 1200):
 
 
 @app.post("/api/agent")
-async def start_agent(req: AgentRequest):
+async def start_agent(request: Request, req: AgentRequest):
     """规划智能体对话：LLM 自主编排地图工具，返回诊断结论与地图渲染指令。"""
     job_id = uuid.uuid4().hex[:12]
     center = (req.lat, req.lng) if req.lat is not None and req.lng is not None else None
-    job = {"status": "running", "started": time.time(), "progress": None}
+    uid = getattr(request.state, "uid", None)
+    if uid is not None:
+        await asyncio.to_thread(auth.consume_agent, uid)
+    job = {"status": "running", "started": time.time(), "progress": None, "owner": uid}
     AGENT_JOBS[job_id] = job
 
     async def on_step(payload: dict):
@@ -339,12 +513,13 @@ async def start_agent(req: AgentRequest):
 
     async def worker():
         try:
-            if not settings.mock and not settings.server_ak:
-                raise BmapError(-1, "BMAP_SERVER_AK 未配置")
+            if not scope.mock_mode(settings.mock) and not scope.cred("ak", settings.server_ak):
+                raise BmapError(-1, "未配置百度服务端 AK：多用户模式下请填入你自己的 AK")
             out = await run_agent(req.message, req.history, center, on_step)
             out["api_calls"] = client.calls
-            if not settings.mock:
-                await asyncio.to_thread(db.save_agent_run, out, req.message, center)
+            if not scope.mock_mode(settings.mock):
+                await asyncio.to_thread(
+                    lambda: db.save_agent_run(out, req.message, center, uid))
             job.update(status="done", progress=None, **out)
         except Exception as e:  # noqa: BLE001 - 任务态需要把任意异常回传给前端
             job.update(status="error", error=str(e), progress=None)

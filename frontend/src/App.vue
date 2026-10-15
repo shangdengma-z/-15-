@@ -1,5 +1,7 @@
 <template>
-  <header class="top">
+  <AuthPanel v-if="gate" @done="onLogin" />
+
+  <header v-if="!gate" class="top">
     <div class="brand">
       <span class="mark num">15′</span>
       <div class="txt">
@@ -11,6 +13,9 @@
       <span class="pill" :class="mockMode ? 'warn' : 'ok'"><i></i>{{ mockMode ? '演示合成路网' : '真实路网' }}</span>
       <span v-if="quotaOut" class="pill bad"><i></i>今日路线规划配额已用完</span>
       <span v-if="stats.communities" class="pill">{{ stats.communities }} 个社区已建档</span>
+      <span v-if="budgetLeft !== null" class="pill" :class="{ bad: budgetLeft <= 0 }">今日还可测
+        <b class="num">{{ budgetLeft }}</b> 次</span>
+      <span v-if="account" class="pill cur">{{ account.nickname || account.email }}</span>
       <span v-if="result" class="pill cur">{{ resultLabel }} · <b class="num">{{ result.health_score }}</b> 分</span>
       <button v-if="runId" class="btn ghost" :class="{ done: linkCopied }" @click="copyLink"
               title="复制这条报告的直达链接，打开即从本机回放，不产生调用">
@@ -18,7 +23,7 @@
     </div>
   </header>
 
-  <div class="shell" :class="{ folded: !drawerOpen, 'hide-left': !consoleOpen }">
+  <div v-if="!gate" class="shell" :class="{ folded: !drawerOpen, 'hide-left': !consoleOpen }">
     <nav class="rail">
       <button v-for="it in NAV" :key="it.k" class="rbtn" :class="{ on: tab === it.k }"
               :title="it.n" @click="switchTab(it.k)">
@@ -90,7 +95,7 @@
                     @actions="onAgentActions" @pick="onAgentPick" />
         <Archive v-if="tab === 'archive'" :history="history" :stats="stats" :compare="compareIds"
                  :comparison="comparison" @load="loadRun" @remove="removeRun" @toggle="toggleCompare" />
-        <SettingsPanel v-if="tab === 'settings'" @changed="onConfigChanged" />
+        <SettingsPanel v-if="tab === 'settings'" @changed="onConfigChanged" @signed-out="onSignedOut" />
       </div>
     </section>
   </div>
@@ -101,9 +106,11 @@ import { computed, onMounted, ref } from 'vue'
 import AgentPanel from './components/AgentPanel.vue'
 import AdvisePanel from './components/AdvisePanel.vue'
 import Archive from './components/Archive.vue'
+import AuthPanel from './components/AuthPanel.vue'
 import MapView from './components/MapView.vue'
 import ReportPanel from './components/ReportPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
+import { UNAUTHORIZED, errorMessage, me } from './api'
 
 const API = import.meta.env.VITE_API_BASE || ''
 
@@ -121,7 +128,7 @@ const VIEWS = {
   advise: ['选址建议', '按人气代理、同类间距与补盲价值推荐候选点位'],
   agent: ['AI 规划助手', '大模型自主编排地图工具，结论直接回标到图上'],
   archive: ['历史档案', '本机 SQLite 记录，点一条即可 0 配额回放'],
-  settings: ['接入设置', '一键切换演示/应用模式，填入你自己的百度 AK 与大模型 Key']
+  settings: ['接入设置', '填入你自己的百度 AK 与大模型 Key，并选择它们存在哪里']
 }
 
 const lat = ref('')
@@ -148,20 +155,61 @@ const drawerOpen = ref(true)
 const consoleOpen = ref(true)
 const runId = ref('')
 const linkCopied = ref(false)
+const authOn = ref(false)
+const account = ref(null)
+const budgetLeft = ref(null)
+
+// 单机模式（后端 AUTH_ENABLED=0）authOn 恒为 false，这一关直接放行，交付路径与录屏不受影响
+const gate = computed(() => authOn.value && !account.value)
 
 const resultLabel = computed(() => result.value?.label || '当前社区')
 
+let hashBound = false
+
 onMounted(async () => {
+  // 会话过期是"任何请求都可能撞上"的事，所以由 fetch 包装统一广播，各组件不用各自处理
+  window.addEventListener(UNAUTHORIZED, onSignedOut)
+  const who = await me()
+  authOn.value = !!who.auth_enabled
+  account.value = who.user || null       // 必须先赋值再算 gate：反了就会把已登录的人挡在登录页
+  budgetLeft.value = who.budget_left ?? null
+  if (gate.value) return          // 停在登录视图：没登录就不发业务请求，省得满屏 401
+  await boot()
+})
+
+async function boot() {
   try {
-    const h = await (await fetch(`${API}/api/health`)).json()
-    mockMode.value = !!h.mock
-    quotaOut.value = !!h.quota_exhausted
+    // 登录模式下要读 /api/config：/api/health 的 mock 是部署级的，
+    // 不反映"我这个请求带了 X-Demo-Mode"，顶栏就会把演示结果标成真实路网
+    const src = await (await fetch(`${API}/api/${authOn.value ? 'config' : 'health'}`)).json()
+    mockMode.value = !!src.mock
+    quotaOut.value = !!src.quota_exhausted
+    if (src.account) budgetLeft.value = src.account.budget_left ?? budgetLeft.value
   } catch (e) { /* 后端未就绪时不显示状态条 */ }
   await refreshLists()
   await replayFromHash()
-  // 应用已打开时别人发来链接、或自己在地址栏改 hash，也要能直接回放
-  window.addEventListener('hashchange', replayFromHash)
-})
+  if (!hashBound) {
+    hashBound = true
+    // 应用已打开时别人发来链接、或自己在地址栏改 hash，也要能直接回放
+    window.addEventListener('hashchange', replayFromHash)
+  }
+}
+
+async function onLogin(user) {
+  account.value = user
+  const who = await me()
+  budgetLeft.value = who.budget_left ?? null
+  await boot()
+}
+
+function onSignedOut() {
+  account.value = null
+  budgetLeft.value = null
+  result.value = null
+  history.value = []
+  stats.value = {}
+  runId.value = ''
+}
 
 function switchTab(k) {
   tab.value = k
@@ -219,6 +267,7 @@ function onAgentPick(c) { onPick(c) }
 async function onConfigChanged(data) {
   mockMode.value = !!data.mock
   quotaOut.value = !!data.quota_exhausted
+  if (data.account) budgetLeft.value = data.account.budget_left ?? budgetLeft.value
   if (data.mock) result.value = null
   await refreshLists()
 }
@@ -309,6 +358,9 @@ async function run() {
         label: p?.name || '', archetype: p?.archetype || ''
       })
     })
+    // 提交失败要说人话：429 是当日额度用尽，400 是没配 AK，不能让它掉进"任务超时"
+    const fail = await errorMessage(res)
+    if (fail) { error.value = fail; return }
     const { job_id: jobId } = await res.json()
     await poll(jobId)
   } catch (e) {
@@ -329,6 +381,7 @@ async function poll(jobId) {
       result.value = job.result
       runId.value = job.run_id || ''
       quotaOut.value = !!job.result?.meta?.quota_exhausted
+      if (authOn.value) budgetLeft.value = (await me()).budget_left ?? budgetLeft.value
       await refreshLists()
       return
     }

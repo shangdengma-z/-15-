@@ -20,9 +20,13 @@ data/cache/
 # 体检历史库（SQLite，含本机演示产生的派生结果，不入库以免误传）
 data/db/
 
-# 离线自测的临时缓存与临时库
+# 离线与集成自测的临时缓存与临时库
 data/cache_selftest/
 data/db_selftest/
+data/cache_selftest_*
+data/db_selftest_*
+data/cache_httptest_*/
+data/db_httptest_*/
 backend/data/
 
 # 联调时的临时探针输出
@@ -33,3 +37,10 @@ probe*.txt
 .idea/
 .vscode/
 .DS_Store
+
+# 上线产物：证书私钥、每日备份、临时日志
+deploy/certs/
+deploy/certbot-www/
+backup/
+backend/tmp*.log
+data/*_uitest_*/

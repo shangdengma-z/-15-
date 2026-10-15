@@ -24,3 +24,8 @@ data/sample
 *.pdf
 .vscode
 .github
+
+# 上线时的证书私钥与备份绝不能进构建上下文（context 是仓库根目录）
+deploy/certs
+deploy/certbot-www
+backup

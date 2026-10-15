@@ -181,6 +181,41 @@ npm run dev
 `BMAP_MOCK=1` 时不消耗任何配额，返回模拟路网数据，可完整演示全部功能流程；
 真实 API 模式将 `BMAP_MOCK=0` 并配置服务端 AK/SK。
 
+## 部署上线（多用户，可选）
+
+默认 `AUTH_ENABLED=0`：单机、无登录、无跨域限制，上面的所有自测与录屏都走这条路径。
+要放到公网给多人自助使用时，把 `AUTH_ENABLED` 置 1，此时：
+
+| 变化 | 说明 |
+|---|---|
+| 账号与会话 | MySQL 8 存 `users/sessions/quotas/rate_log`；口令 argon2id 加盐哈希，会话 cookie 只存 token 的 SHA-256，签名走 `SECRET_KEY` |
+| 数据隔离 | 缓存目录与档案 `scene_key` 都按 `u<用户id>` 分片：同社区两人各存一份，互相读不到（读别人的 id 一律 404，不区分"不存在"与"越权"） |
+| 密钥去向 | **默认只存用户自己浏览器的 localStorage**，随请求头 `X-Bmap-AK`/`X-Llm-Key` 带上、服务端不留副本；用户主动勾"加密保存到本账户"才用 `MASTER_KEY` Fernet 加密入库，取消勾选即刻删除 |
+| 额度与限速 | 每人每日 `DAILY_ANALYSIS_BUDGET` 次体检（提交即扣，防并发绕过）、每 IP 每日注册数、登录尝试 10 分钟窗口；全局 `JOB_SLOTS` 并发闸 |
+| 写接口 | 一律要求登录 + CSRF 双提交（`Sec-Fetch-Site: same-origin` 亦视为同源）；`POST /api/config` 在多用户下**不允许**改数据模式与限流档位，那是部署级配置 |
+| 演示模式 | 多用户下用请求级 `X-Demo-Mode: 1` 表达，不会把一个账号的开关传染给全站 |
+
+```bash
+# 1) 服务器准备：swap、目录、证书（脚本会打印它不替你做的防火墙与百度控制台两步）
+bash deploy/server-setup.sh your.domain.com
+
+# 2) 根目录 .env：AUTH_ENABLED=1、DB_BACKEND=mysql、DB_*（含 DB_ROOT_PASSWORD）、
+#    SECRET_KEY/MASTER_KEY（各生成一个随机 32 字节串）、VITE_BMAP_AK=浏览器端类型 AK
+#    注意：上线实例里不要写 BMAP_SERVER_AK / LLM_API_KEY，让每个用户填自己的
+
+# 3) 起服务（只有 nginx 边缘容器对外听 80/443，3306 与 8000 都不发布）
+docker compose --project-directory . -f deploy/docker-compose.prod.yml up -d --build
+curl -i https://your.domain.com/api/health
+
+# 4) 每日备份（MySQL + SQLite 两份都备，保留 14 份）
+crontab -e   # 40 3 * * * cd /srv/bisai && bash deploy/backup.sh >> /var/log/circle15-backup.log 2>&1
+```
+
+`deploy/my.cnf` 是按 2C2G 调的（关 `performance_schema` 与 binlog、256M buffer pool、40 连接），
+`performance_schema` 一项在默认配置下就能吃掉小机器一半内存。前端镜像里编译进去的只有
+**浏览器端类型**的地图 AK（展示底图要用，靠 Referer 白名单约束），服务端 REST 的 AK 绝不进镜像，
+所以不要把构建好的前端镜像发给别人。
+
 ## 坐标系统说明
 全链路统一使用百度 **BD09LL** 坐标系（REST API 与 JSAPI 一致），无需额外坐标转换；
 若接入其他来源数据，先调用 `/coord/v3/convert` 转换。
@@ -199,18 +234,25 @@ backend/app/        FastAPI 服务
   llm.py              OpenAI 兼容 LLM 客户端（function calling + 缓存 + 重试）
   agent.py            规划智能体：工具定义、受限编排循环、规则模式降级
   main.py             HTTP API（异步任务 + 轮询 + 历史/对比/导出/统计 + 计量响应头）
+  auth.py             多用户底座：MySQL 四表、argon2id 口令、签名会话、Fernet 密钥保管、限速与每日额度
+  authapi.py          注册/登录/登出/我是谁 + 守卫中间件用到的判定（失败信息一律模糊）
+  scope.py            请求级"当前用户"作用域：缓存子目录与凭据都跟着请求走，不写全局 settings
   baidu_client.py 补充：按服务分桶限流、日配额熔断、POI 检索停止原因登记
 backend/tests/      离线自测（mock 地图 + 假 LLM，无需任何密钥）
 frontend/src/       Vue3 + Vite（四列工作台栅格 + 实色纸面卡片）
+  api.js              统一 fetch 包装：每个请求自动补 CSRF 与密钥头，401 广播回登录视图
   theme.css           设计令牌：低饱和鼠尾草绿/灰蓝体系、发丝边框、压缩体数字、打印态样式
   App.vue             顶栏 + 图标导轨 + 选点控制 + 地图 + 结论面板（grid 列宽实现收起）
+  components/AuthPanel.vue    登录/注册（写清楚密钥与数据的去向）
   components/MapView.vue      BMapGL 底图、底部图层坞、图例、详情弹窗、路线核对链接、拖拽中心点
   components/ReportPanel.vue  体检报告（刻度分仪表、覆盖叠影柱、盲区清单、圈内设施、指标口径折叠区）
   components/AgentPanel.vue   AI 规划助手对话面板（工具轨迹实时展示）
   components/AdvisePanel.vue  选址建议（业态选择、候选排序、口径与出网成本披露）
   components/Archive.vue      历史档案与跨社区 A/B 对比
-  components/SettingsPanel.vue 接入设置（模式一键切换、自填 AK/Key、限流档位、密钥去向说明）
+  components/SettingsPanel.vue 接入设置（模式一键切换、自填 AK/Key、密钥存放位置、账户与额度、限流档位）
 scripts/            demo.ps1 / demo.sh（免密钥一键演示）、prewarm.py（真实数据预热）
+deploy/             上线件：nginx.conf（TLS 边缘）、my.cnf（2C2G 调优）、docker-compose.prod.yml、
+                    server-setup.sh（swap/目录/证书）、backup.sh（MySQL+SQLite 每日备份）
 data/sample/        五个典型社区的派生结果样张（离线复现用，不含平台原始响应）
 docs/               技术设计文档
 ```
@@ -230,6 +272,9 @@ docs/               技术设计文档
 | `GET /api/runs` / `GET /api/runs/{id}` | 历史列表 / 单份派生结果（回放零出网） |
 | `DELETE /api/runs/{id}` | 删除一条历史 |
 | `GET /api/runs/{id}/report.md` | 导出 Markdown 体检报告 |
+| `POST /api/runs/{id}/public` | 把某条报告设为公开（分享链接可匿名读取），再设回 false 即收回 |
+| `POST /api/auth/register` / `/login` / `/logout` | 仅 `AUTH_ENABLED=1`：注册/登录下发 `sid`(HttpOnly)+`csrf` 双提交 cookie |
+| `GET /api/auth/me` | 是否启用多用户、当前身份、今日剩余体检次数 |
 | `GET /api/compare?ids=a,b` | 跨社区 A/B 对比（逐类别差值） |
 | `GET /api/biz-types` | 选址建议支持的业态清单（同类间距来自后端单一口径） |
 | `POST /api/advise` | 选址建议 `{lat, lng, biz, top?}`：复用已建档结果，只为候选点补步行实测 |
@@ -265,10 +310,21 @@ python backend/tests/test_persistence_offline.py
 # 住宅小区名称过滤与楼号合并、候选间距/top 限制、步行实测出网上限、口径随结果返回
 python backend/tests/test_modules_offline.py
 
+# 认证离线自测（不连库、CI 必跑）：argon2id 校验、签名篡改、CSRF 配对、掩码、
+# 限速窗口、额度扣减方向、AUTH_ENABLED=0 时整条链路放行
+python backend/tests/test_auth_offline.py
+
+# 多用户自测（需要 .env 里配好 MySQL，未配置则自动 SKIP 返回 0）：
+#   test_auth_mysql.py      账号生命周期直连真库，跑完清掉自己造的数据
+#   test_auth_http_mysql.py HTTP 层隔离：A/B 互不可见、越权 404、公开分享只读、
+#                           缺 CSRF 403、额度耗尽 429 且不影响他人、密钥"只在浏览器/入库/取消即删"
+python backend/tests/test_auth_mysql.py
+python backend/tests/test_auth_http_mysql.py
+
 # 出网策略基准（零真实出网，产出 docs/bench_route_strategy.json）
 python scripts/bench_route_strategy.py
 
-# CI（GitHub Actions）每次 push 自动执行：ruff 检查 + 三份离线自测 + Mock 冒烟 + 前端构建
+# CI（GitHub Actions）每次 push 自动执行：ruff 检查 + 离线自测（含认证离线套件）+ Mock 冒烟 + 前端构建
 ```
 
 ## License

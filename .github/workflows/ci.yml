@@ -21,6 +21,8 @@ jobs:
         run: python backend/tests/test_agent_offline.py
       - name: Standards & site-advisor offline self-test (mock map)
         run: python backend/tests/test_modules_offline.py
+      - name: Auth layer offline self-test (no DB required)
+        run: python backend/tests/test_auth_offline.py
       - name: Persistence & scenario offline self-test (temp SQLite)
         run: python backend/tests/test_persistence_offline.py
       - name: Smoke test (mock mode)

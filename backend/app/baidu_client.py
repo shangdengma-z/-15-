@@ -17,6 +17,7 @@ from pathlib import Path
 
 import httpx
 
+from . import scope
 from .config import settings
 
 log = logging.getLogger("bmap")
@@ -111,18 +112,19 @@ class BmapClient:
         self.matrix_ok = True
 
     def _cache_path(self, path: str, params: dict) -> Path:
-        # 缓存键带模式前缀，防止 Mock 数据污染真实结果
-        mode = "mock" if settings.mock else "real"
+        # 缓存键带模式前缀，防止 Mock 数据污染真实结果；再按当前用户分目录，
+        # 否则多用户上线后 A 的检索结果会直接喂给 B（见 scope.py）
+        mode = "mock" if scope.mock_mode(settings.mock) else "real"
         key = hashlib.md5((path + json.dumps(params, sort_keys=True)).encode()).hexdigest()
-        return self.cache_dir / f"{mode}_{path.strip('/').replace('/', '_')}_{key}.json"
+        return scope.under(self.cache_dir) / f"{mode}_{path.strip('/').replace('/', '_')}_{key}.json"
 
     def _sign(self, path: str, params: dict) -> dict:
         """服务端 AK+SK 数字签名：sn = md5(path + "?" + 有序参数串 + sk)。"""
-        if not settings.server_sk:
+        if not scope.cred("sk", settings.server_sk):
             return params
         items = {k: v for k, v in params.items() if v != ""}
         query = "&".join(f"{k}={items[k]}" for k in sorted(items))
-        sn = hashlib.md5(f"{path}?{query}{settings.server_sk}".encode()).hexdigest()
+        sn = hashlib.md5(f"{path}?{query}{scope.cred('sk', settings.server_sk)}".encode()).hexdigest()
         return {**params, "sn": sn}
 
     async def get(self, path: str, params: dict, quota: int = 1) -> dict:
@@ -131,7 +133,7 @@ class BmapClient:
             self.cache_hits += 1
             return json.loads(cache_file.read_text(encoding="utf-8"))
 
-        if settings.mock:
+        if scope.mock_mode(settings.mock):
             data = self._mock_response(path, params)
             cache_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
             return data
@@ -140,7 +142,8 @@ class BmapClient:
             # 日配额已耗尽：不再出网烧请求，直接由上层降级处理（演示现场的保护阀）
             raise BmapError(10, "daily quota exhausted, cached responses only")
 
-        full = self._sign(path, {"ak": settings.server_ak, "output": "json", **params})
+        full = self._sign(path, {"ak": scope.cred("ak", settings.server_ak),
+                                 "output": "json", **params})
         svc = _service_of(path)
         last_err = None
         for attempt in range(5):

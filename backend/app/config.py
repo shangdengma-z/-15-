@@ -31,12 +31,33 @@ class Settings:
     city: str = field(default_factory=lambda: _env("SAMPLE_CITY", "北京市"))
     max_candidates: int = field(default_factory=lambda: int(_env("BLINDSPOT_MAX_CANDIDATES", "16")))
     verify_nearest: int = field(default_factory=lambda: int(_env("BLINDSPOT_VERIFY_NEAREST", "3")))
+    # 跨域白名单：单机开发用默认 *；上线走 nginx 同源后填自己的域名，例如
+    # CORS_ORIGINS=https://circle.example.com（逗号分隔多个）
+    cors_origins: str = field(default_factory=lambda: _env("CORS_ORIGINS", "*"))
 
     # 规划智能体：OpenAI 兼容接口，默认对接 DeepSeek，换厂商只需改 BASE_URL/MODEL
     llm_api_key: str = field(default_factory=lambda: _env("LLM_API_KEY"))
     llm_base_url: str = field(default_factory=lambda: _env("LLM_BASE_URL", "https://api.deepseek.com"))
     llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", "deepseek-chat"))
     agent_max_steps: int = field(default_factory=lambda: int(_env("AGENT_MAX_STEPS", "4")))
+
+    # ===== 多用户上线相关（默认全关：单机演示与赛题交付走原路径）=====
+    auth_enabled: bool = field(default_factory=lambda: _env("AUTH_ENABLED", "0") == "1")
+    # sqlite | mysql —— 仓储层两种后端共用同一套接口，切换只改这一项
+    db_backend: str = field(default_factory=lambda: _env("DB_BACKEND", "sqlite"))
+    db_host: str = field(default_factory=lambda: _env("DB_HOST", "127.0.0.1"))
+    db_port: int = field(default_factory=lambda: int(_env("DB_PORT", "3306")))
+    db_name: str = field(default_factory=lambda: _env("DB_NAME", "circle15"))
+    db_user: str = field(default_factory=lambda: _env("DB_USER"))
+    db_password: str = field(default_factory=lambda: _env("DB_PASSWORD"))
+    # 会话 cookie 的签名密钥；MASTER_KEY 只用于"用户主动选择加密保存到账户"的 AK
+    secret_key: str = field(default_factory=lambda: _env("SECRET_KEY"))
+    master_key: str = field(default_factory=lambda: _env("MASTER_KEY"))
+    session_days: int = field(default_factory=lambda: int(_env("SESSION_DAYS", "14")))
+    # 开放注册的护栏：每 IP 每日注册数、每人每日分析次数、全局并发任务数
+    max_reg_per_ip_day: int = field(default_factory=lambda: int(_env("MAX_REG_PER_IP_DAY", "5")))
+    daily_analysis_budget: int = field(default_factory=lambda: int(_env("DAILY_ANALYSIS_BUDGET", "30")))
+    job_slots: int = field(default_factory=lambda: int(_env("JOB_SLOTS", "4")))
 
 
 settings = Settings()
