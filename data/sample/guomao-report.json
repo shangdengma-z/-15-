@@ -2454,9 +2454,120 @@
    "evidence_complete": true
   }
  },
- "blindspots": [],
- "health_score": 100,
+ "standards": {
+  "items": [
+   {
+    "name": "便利店 / 超市",
+    "ref_m": 300,
+    "inside": 5,
+    "nearest_m": 469,
+    "nearest_name": "原点369便利店(建外店)",
+    "status": "缺口",
+    "basis": "GB50180 五分钟生活圈"
+   },
+   {
+    "name": "菜市场 / 生鲜",
+    "ref_m": 500,
+    "inside": 0,
+    "nearest_m": 515,
+    "nearest_name": "千百家菜市场",
+    "status": "临界",
+    "basis": "上海 15 分钟导则"
+   },
+   {
+    "name": "药店",
+    "ref_m": 500,
+    "inside": 4,
+    "nearest_m": 436,
+    "nearest_name": "北京市朝阳区双井社区卫生服务中心中药房",
+    "status": "达标",
+    "basis": "上海 15 分钟导则"
+   },
+   {
+    "name": "社区卫生服务",
+    "ref_m": 1000,
+    "inside": 16,
+    "nearest_m": 331,
+    "nearest_name": "正嘉永安中医诊所",
+    "status": "达标",
+    "basis": "GB50180 十分钟生活圈"
+   },
+   {
+    "name": "幼儿园",
+    "ref_m": 500,
+    "inside": 1,
+    "nearest_m": 472,
+    "nearest_name": "家育苑幼儿园(建外校区)",
+    "status": "达标",
+    "basis": "GB50180 五分钟生活圈"
+   },
+   {
+    "name": "小学",
+    "ref_m": 1000,
+    "inside": 1,
+    "nearest_m": 612,
+    "nearest_name": "清华大学附属小学商务中心区实验小学",
+    "status": "达标",
+    "basis": "GB50180 十分钟生活圈"
+   },
+   {
+    "name": "养老 / 日间照料",
+    "ref_m": 1000,
+    "inside": 2,
+    "nearest_m": 518,
+    "nearest_name": "北京康尔泰养老服务有限公司",
+    "status": "达标",
+    "basis": "上海 15 分钟导则"
+   }
+  ],
+  "passed": 5,
+  "total": 7,
+  "method": "直线最近距离初筛（不再消耗步行配额），路网实测见盲区清单"
+ },
+ "blindspots": [
+  {
+   "lng": 116.454522,
+   "lat": 39.913543,
+   "missing_preview": [
+    "菜市场"
+   ],
+   "undetermined": [],
+   "missing": [
+    "菜市场"
+   ],
+   "verified": true
+  }
+ ],
+ "blindspot_clusters": [
+  {
+   "cells": 1,
+   "area_km2": 0.09,
+   "lat": 39.91354,
+   "lng": 116.45452,
+   "bbox": [
+    39.91354,
+    116.45452,
+    39.91354,
+    116.45452
+   ],
+   "missing": [
+    "菜市场"
+   ],
+   "missing_cells": {
+    "菜市场": 2
+   },
+   "verified_names": [
+    "菜市场"
+   ],
+   "verified_cells": 1,
+   "suspect_cells": 0,
+   "undetermined": [],
+   "level": "连片已核验"
+  }
+ ],
+ "health_score": 96,
  "area_km2": 1.071,
+ "gap_share": 0.084,
  "detour": {
   "samples": 72,
   "detour_factor_p50": 1.536,
@@ -3218,10 +3329,10 @@
   {
    "key": "health_score",
    "label": "生活圈健康分",
-   "value": 100,
+   "value": 96,
    "unit": "分",
-   "formula": "100 − 12×圈内零覆盖类别数 − 8×min(已核验盲区数, 5)",
-   "note": "零覆盖类别 0/4，已核验盲区 0 处"
+   "formula": "100 − 12×圈内零覆盖类别数 − 45×已核验盲区面积占比",
+   "note": "零覆盖类别 0/4；已核验 1 格 × 0.09 km² ÷ 1.071 km² = 占比 8%，本项扣 4 分"
   },
   {
    "key": "coverage",
@@ -3234,26 +3345,24 @@
   {
    "key": "blindspot",
    "label": "服务盲区",
-   "value": 0,
-   "unit": "处",
+   "value": 1,
+   "unit": "格",
    "formula": "直线初筛命中 且 批量距离矩阵到最近 N 个设施均 > 阈值",
-   "note": "另有 0 处因检索未查全记为无法判定，不计入扣分"
+   "note": "连片后为 1 个片区；另有 0 格因检索未查全记为无法判定，不计入扣分"
   }
  ],
  "meta": {
-  "elapsed_sec": 24.0,
-  "api_calls": 98,
-  "cache_hits": 0,
-  "quota_units": 98,
+  "elapsed_sec": 0.1,
+  "api_calls": 1,
+  "cache_hits": 101,
+  "quota_units": 3,
   "by_service": {
-   "geocoding": 1,
-   "direction": 72,
-   "place": 25
+   "distancematrix": 1
   },
   "place_probes": 11,
   "degraded": false,
   "retry_count": 0,
-  "matrix_fallback": false,
+  "matrix_fallback": true,
   "mock": false,
   "data_mode": "real",
   "sampling": {
@@ -3265,7 +3374,7 @@
     1500
    ],
    "grid_step_m": 300,
-   "max_candidates": 8,
+   "max_candidates": 16,
    "verify_nearest": 3
   },
   "evidence_id": "7c84364f5357777c",

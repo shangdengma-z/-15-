@@ -56,6 +56,21 @@
     {
       "fact": "百度对未知查询参数静默忽略（probe_deadbeef 对照实验，同赛道）",
       "implication": "阴性结论只能说『未观察到差异』，不能说『没有影响』"
+    },
+    {
+      "fact": "place/v2/search 把明细放在顶层 results（不是 result.results）；无 SN 时个人 AK 直连圆形检索也返回 status=0 + 明细",
+      "evidence": "2026-10-14 写密钥校验时按 result.results 取值导致可用 AK 被误判零结果，实测响应键为 ['status','message','total','result_type','query_type','results']",
+      "impact": "校验与检索解析都以顶层 results 为准，同时兼容 result 为 list/dict 的形态"
+    },
+    {
+      "fact": "路线规划配额可从个人默认档升到 30 QPS / 1 万次每天；突发保护按秒级窗口，仍然会返回 401",
+      "evidence": "2026-10-14 账号后台显示 17/30 QPS、已用 23.59% / 1 万次；强制冷跑实测 183 次出网 / 8.4 秒 / 49 次退避重试且 degraded=false",
+      "impact": "配额升档用于把盲区核验上限从 8 提到 16（全部格点过矩阵复核），而不是继续加大并发"
+    },
+    {
+      "fact": "无效 AK / 无效大模型 key 都能被一次真实请求识别，并把上游原文带回",
+      "evidence": "乱填 AK 返回 status=200「APP不存在，AK有误请检查再重试」；乱填千帆 key 返回 HTTP401 invalid_iam_token；模型名不在套餐白名单返回 HTTP403",
+      "impact": "/api/config 默认 verify=true：校验不过 422 且不落地，避免随便填一个也能保存"
     }
   ]
 }

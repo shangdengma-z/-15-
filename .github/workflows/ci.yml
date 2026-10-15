@@ -19,6 +19,8 @@ jobs:
           ruff check backend/app --select E,F,W --ignore E501
       - name: Agent offline self-test (mock map + fake LLM)
         run: python backend/tests/test_agent_offline.py
+      - name: Standards & site-advisor offline self-test (mock map)
+        run: python backend/tests/test_modules_offline.py
       - name: Persistence & scenario offline self-test (temp SQLite)
         run: python backend/tests/test_persistence_offline.py
       - name: Smoke test (mock mode)
@@ -55,13 +57,21 @@ r = d["result"]
 assert len(r["rings"]["15"]) >= 12, "等时圈顶点不足"
 assert r["coverage"] and all(v["total"] >= 0 for v in r["coverage"].values()), "覆盖统计缺失"
 assert "missing" in json.dumps(r["blindspots"], ensure_ascii=False) or r["blindspots"] == [], "盲区字段异常"
+cl = r["blindspot_clusters"]
+assert sum(c["cells"] for c in cl) == len(r["blindspots"]), "片区聚合丢格/重计"
+assert all(c["cells"] >= 1 and c["area_km2"] > 0 and "missing" in c for c in cl), "片区字段不完整"
 assert len(r["meta"]["evidence_id"]) == 16, "证据指纹缺失"
 sc = r["scenarios"]["by_crowd"]
 assert sc["elderly"]["area_km2"] < sc["adult"]["area_km2"], "人群步速换算方向错误"
 assert r["scenarios"]["api_calls_for_scenarios"] == 0, "情景重算不应出网"
 assert r["metrics"] and all("formula" in m for m in r["metrics"]), "可解释指标缺公式"
+std = r["standards"]
+assert std["total"] >= 5 and std["method"], "导则达标对照缺失"
+assert all(i["ref_m"] > 0 and i["status"] in ("达标", "临界", "缺口", "无点位") for i in std["items"]), "导则状态取值异常"
+assert std["passed"] == sum(1 for i in std["items"] if i["status"] == "达标"), "达标计数不自洽"
 print("零密钥全链路 OK：健康分", r["health_score"], "| 盲区", len(r["blindspots"]),
-      "处 | 等时圈顶点", len(r["rings"]["15"]), "| 热力点", len(r["heat"]),
+      "处 | 导则达标", std["passed"], "/", std["total"],
+      "项 | 等时圈顶点", len(r["rings"]["15"]), "| 热力点", len(r["heat"]),
       "| 老人/成人面积", sc["elderly"]["area_km2"], "/", sc["adult"]["area_km2"])
 ' && exit 0
           done

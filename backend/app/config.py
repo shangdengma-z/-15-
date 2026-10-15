@@ -14,9 +14,10 @@ def _env(name: str, default: str = "") -> str:
 class Settings:
     server_ak: str = field(default_factory=lambda: _env("BMAP_SERVER_AK"))
     server_sk: str = field(default_factory=lambda: _env("BMAP_SERVER_SK"))
-    # 限流按服务独立计（百度个人 AK 实测：步行 3 QPS、地点检索 30 QPS），见 baidu_client.py
-    qps: float = field(default_factory=lambda: float(_env("BMAP_QPS", "3")))
-    concurrency: int = field(default_factory=lambda: int(_env("BMAP_CONCURRENCY", "3")))
+    # 限流按服务独立计。2026-10-14 账号的路线规划配额升到 30 QPS / 1 万次每天，
+    # 之前记录的是个人 AK 的默认档（步行 3 QPS / 5000 次），见 baidu_client.py 与 .env 注释
+    qps: float = field(default_factory=lambda: float(_env("BMAP_QPS", "30")))
+    concurrency: int = field(default_factory=lambda: int(_env("BMAP_CONCURRENCY", "10")))
     place_qps: float = field(default_factory=lambda: float(_env("BMAP_PLACE_QPS", "25")))
     place_concurrency: int = field(default_factory=lambda: int(_env("BMAP_PLACE_CONCURRENCY", "8")))
     geo_qps: float = field(default_factory=lambda: float(_env("BMAP_GEO_QPS", "8")))
@@ -28,7 +29,7 @@ class Settings:
     sample_radii: str = field(default_factory=lambda: _env("ISOCHRONE_RADII", "300,600,1000,1500"))
     walk_target_sec: int = field(default_factory=lambda: int(_env("ISOCHRONE_TARGET_SEC", "900")))
     city: str = field(default_factory=lambda: _env("SAMPLE_CITY", "北京市"))
-    max_candidates: int = field(default_factory=lambda: int(_env("BLINDSPOT_MAX_CANDIDATES", "8")))
+    max_candidates: int = field(default_factory=lambda: int(_env("BLINDSPOT_MAX_CANDIDATES", "16")))
     verify_nearest: int = field(default_factory=lambda: int(_env("BLINDSPOT_VERIFY_NEAREST", "3")))
 
     # 规划智能体：OpenAI 兼容接口，默认对接 DeepSeek，换厂商只需改 BASE_URL/MODEL

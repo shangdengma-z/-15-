@@ -35,6 +35,28 @@ class LLMClient:
         self.cache_hits = 0
         self._http = httpx.AsyncClient(timeout=90)
 
+    async def probe(self, base_url: str, key: str, model: str) -> tuple:
+        """真实连通性校验：发一条最小对话确认 key/base_url/model 三者都对得上。
+
+        返回 (ok, 说明)。不写缓存；失败时把上游原始状态带回去，方便判断是
+        key 无效、模型名不对，还是 base_url 路径不对（个人套餐常踩路径与模型白名单的坑）。
+        """
+        if not key or not base_url or not model:
+            return False, "key / base_url / model 必须都填齐"
+        try:
+            r = await self._http.post(base_url.rstrip("/") + "/chat/completions",
+                                      headers={"Authorization": f"Bearer {key}"},
+                                      json={"model": model, "max_tokens": 1,
+                                            "messages": [{"role": "user", "content": "ping"}]})
+            data = r.json() if "json" in (r.headers.get("content-type") or "") else {}
+            if r.status_code == 200 and data.get("choices"):
+                return True, f"{model} 响应正常"
+            err = data.get("error") or data.get("msg") or {}
+            detail = err.get("message") if isinstance(err, dict) else str(err)
+            return False, f"HTTP{r.status_code} {detail or str(data)[:160]}".strip()
+        except (httpx.HTTPError, ValueError) as e:
+            return False, f"请求失败：{type(e).__name__} {str(e)[:120]}".strip()
+
     @property
     def enabled(self) -> bool:
         return bool(settings.llm_api_key)

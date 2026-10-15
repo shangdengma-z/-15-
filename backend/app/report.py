@@ -40,6 +40,19 @@ def to_markdown(r: dict) -> str:
     for v in (r.get("coverage") or {}).values():
         lines.append(f"| {v['name']} | {v['inside']} | {v['total']} | {_bool(v.get('evidence_complete'))} |")
 
+    std = r.get("standards") or {}
+    if std.get("items"):
+        lines += ["", "### 导则达标对照", "",
+                  f"- 口径：{std.get('method')}；{std.get('passed')}/{std.get('total')} 项达标",
+                  "",
+                  "| 项目 | 圈内数量 | 中心点直线最近 | 参考半径 | 状态 | 参考出处 |",
+                  "| --- | --- | --- | --- | --- | --- |"]
+        for i in std["items"]:
+            near = i["nearest_m"] if i["nearest_m"] is not None else "—"
+            lines.append(f"| {i['name']} | {i['inside']} | {near} m | {i['ref_m']} m | "
+                         f"{i['status']} | {i['basis']} |")
+        lines += ["", "参考半径为公开规划导则的常用取值，属参考口径而非本地强制标准。"]
+
     lines += ["", "## 三、可解释指标", ""]
     for m in r.get("metrics") or []:
         lines.append(f"- **{m['label']}** = {m['value']} {m['unit']}；公式：`{m['formula']}`；{m['note']}")
@@ -54,10 +67,22 @@ def to_markdown(r: dict) -> str:
         f"- {d.get('note')}",
     ]
 
-    lines += ["", f"## 五、服务盲区（{len(r.get('blindspots') or [])} 处）", ""]
+    lines += ["", f"## 五、服务盲区（{len(r.get('blindspots') or [])} 个网格点）", ""]
+    clusters = r.get("blindspot_clusters") or []
+    if clusters:
+        lines += ["300 m 网格逐格判定，连片的同性质缺口在此并成片区，避免逐格复读：", "",
+                  "| 片区 | 缺乏设施 | 格数 | 约面积 | 中心点 | 核验情况 |",
+                  "| --- | --- | --- | --- | --- | --- |"]
+        for idx, c in enumerate(clusters, 1):
+            miss = "、".join(c["missing"]) or "待判定"
+            lines.append(f"| {idx} | {miss} | {c['cells']} | {c['area_km2']} km² | "
+                         f"{c['lat']}, {c['lng']} | 已核验 {c['verified_cells']} / 待核验 "
+                         f"{c['suspect_cells']} |")
+        lines += [""]
     bs = r.get("blindspots") or []
     if bs:
-        lines += ["| 状态 | 纬度 | 经度 | 缺乏设施 | 无法判定项 | 官方路线核对 |",
+        lines += ["### 逐格清单（地图上的形状即这些格子）", "",
+                  "| 状态 | 纬度 | 经度 | 缺乏设施 | 无法判定项 | 官方路线核对 |",
                   "| --- | --- | --- | --- | --- | --- |"]
         for b in bs:
             items = "、".join(b.get("missing") or b.get("missing_preview") or [])

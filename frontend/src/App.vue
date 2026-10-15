@@ -1,90 +1,96 @@
 <template>
-  <header class="top print-hide">
+  <header class="top">
     <div class="brand">
-      <span class="logo">15′</span>
-      <div>
+      <span class="mark num">15′</span>
+      <div class="txt">
         <h1>15 分钟生活圈 · 智能体检与规划助手</h1>
-        <p>百度地图开放能力 · 真实路网等时圈 · 服务盲区核验 · 时间与人群双轴情景</p>
+        <p>百度地图真实路网 · 可达圈测绘 · 服务盲区核验</p>
       </div>
     </div>
     <div class="pills">
-      <span class="pill" :class="mockMode ? 'warn' : 'ok'"><i></i>{{ mockMode ? 'Mock 合成路网' : '真实路网' }}</span>
-      <span v-if="quotaOut" class="pill bad"><i></i>步行日配额耗尽 · 只读缓存</span>
-      <span v-if="stats.communities" class="pill"><i></i>{{ stats.communities }} 社区 ·
-        出网 {{ stats.api_calls }} 次 · 命中率 {{ hitRate }}</span>
-      <span v-if="result" class="pill"><i></i>{{ result.label || '当前社区' }} · {{ result.health_score }} 分</span>
+      <span class="pill" :class="mockMode ? 'warn' : 'ok'"><i></i>{{ mockMode ? '演示合成路网' : '真实路网' }}</span>
+      <span v-if="quotaOut" class="pill bad"><i></i>今日路线规划配额已用完</span>
+      <span v-if="stats.communities" class="pill">{{ stats.communities }} 个社区已建档</span>
+      <span v-if="result" class="pill cur">{{ resultLabel }} · <b class="num">{{ result.health_score }}</b> 分</span>
+      <button v-if="runId" class="btn ghost" :class="{ done: linkCopied }" @click="copyLink"
+              title="复制这条报告的直达链接，打开即从本机回放，不产生调用">
+        {{ linkCopied ? '链接已复制' : '复制链接' }}</button>
     </div>
   </header>
 
-  <div class="shell">
-    <NavRail class="railslot print-hide" :items="NAV" :model="tab" :mock-mode="mockMode"
-             :stats="stats" :has-result="!!result" @pick="switchTab" />
+  <div class="shell" :class="{ folded: !drawerOpen, 'hide-left': !consoleOpen }">
+    <nav class="rail">
+      <button v-for="it in NAV" :key="it.k" class="rbtn" :class="{ on: tab === it.k }"
+              :title="it.n" @click="switchTab(it.k)">
+        <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true">
+          <path :d="it.d" fill="none" stroke="currentColor" stroke-width="1.7"
+                stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <em v-if="badge(it)" class="num">{{ badge(it) }}</em>
+        <span>{{ it.n.slice(0, 2) }}</span>
+      </button>
+      <div class="rfoot" :class="mockMode ? 'warn' : 'ok'">{{ mockMode ? 'DEMO' : 'REAL' }}</div>
+    </nav>
 
-    <aside class="col left print-hide">
-      <div class="card">
-        <div class="card-title">选择社区</div>
+    <aside class="console">
+      <div class="chead">
+        <span class="eyebrow">选点与体检</span>
+        <button class="fold" @click="consoleOpen = false" title="隐藏左栏，地图加宽">隐藏选点 ⟩</button>
+      </div>
+      <section>
+        <div class="eyebrow">选择社区</div>
         <div class="presets">
-          <button v-for="p in presets" :key="p.id" class="preset" :class="{ on: isActive(p) }"
-                  @click="usePreset(p)">
+          <button v-for="p in presets" :key="p.id" class="preset" :class="{ on: isActive(p) }" @click="usePreset(p)">
             <b>{{ p.name }}</b><span>{{ p.archetype }}</span>
+            <em v-if="histOf(p)" class="num">{{ histOf(p).score }}</em>
           </button>
         </div>
+      </section>
+
+      <section>
+        <div class="eyebrow">坐标 · BD09LL</div>
         <div class="coords">
-          <label>纬度<input v-model.number="lat" type="number" step="0.0001"
-                            @keyup.enter="lng && setCenterFromInput()" /></label>
-          <label>经度<input v-model.number="lng" type="number" step="0.0001"
-                            @keyup.enter="lat && setCenterFromInput()" /></label>
+          <label>纬度<input v-model.number="lat" type="number" step="0.0001" @keyup.enter="lng && setCenterFromInput()" /></label>
+          <label>经度<input v-model.number="lng" type="number" step="0.0001" @keyup.enter="lat && setCenterFromInput()" /></label>
         </div>
-        <div v-if="center" class="picked">已选中心 <code>{{ center[0].toFixed(5) }}, {{ center[1].toFixed(5) }}</code></div>
+        <div v-if="center" class="picked">中心点 <code class="num">{{ center[0].toFixed(5) }}, {{ center[1].toFixed(5) }}</code></div>
         <button class="btn" :disabled="!center || running" @click="run">
-          {{ running ? `计算中 ${elapsed}s…` : '开始体检' }}</button>
+          {{ running ? `测绘中 ${elapsed}s` : '开始体检' }}</button>
         <ol v-if="running || steps.length" class="hud">
           <li v-for="s in steps" :key="s.name" :class="s.state">
             <i>{{ s.state === 'done' ? '✓' : s.state === 'run' ? '▸' : '·' }}</i>{{ s.name }}
           </li>
         </ol>
-        <p class="tip">首次约 40~60s（步行接口 3 QPS 是瓶颈）；缓存命中后 0.7s 返回、几乎 0 出网。
-          图上右键或拖拽中心点可直接重跑。</p>
-        <div v-if="error" class="err">{{ error }}</div>
-      </div>
-
-      <div v-if="result" class="card">
-        <div class="card-title">本轮计量</div>
-        <div class="tiles">
-          <div class="tile"><b>{{ result.meta.api_calls }}</b><span>出网请求</span></div>
-          <div class="tile"><b>{{ result.meta.quota_units }}</b><span>配额单位</span></div>
-          <div class="tile"><b>{{ result.meta.cache_hits }}</b><span>缓存命中</span></div>
-          <div class="tile"><b>{{ result.meta.elapsed_sec }}s</b><span>计算耗时</span></div>
-        </div>
-      </div>
+        <p v-if="error" class="err">{{ error }}</p>
+        <p v-else class="tip">图上单击选点、右键立即重跑；拖动中心标记也会重新测绘。</p>
+      </section>
     </aside>
 
     <MapView class="stage" :center="center" :result="result" :actions="agentActions" :focus="focus"
-             :overlay-ring="scenarioRing" @pick="onPick" @run="runAt" />
+             @pick="onPick" @run="runAt">
+      <button v-if="!consoleOpen" class="unfold left" @click="consoleOpen = true">⟨ 选点</button>
+      <button v-if="!drawerOpen" class="unfold" @click="drawerOpen = true">展开面板 ⟩</button>
+    </MapView>
 
-    <section class="col right">
-      <div class="drawer card">
-        <div class="dhead">
-          <div>
-            <h2>{{ viewTitle }}</h2>
-            <p>{{ viewHint }}</p>
-          </div>
-          <div class="dacts" v-if="tab === 'report'">
-            <button v-if="runId" class="btn ghost mini" @click="exportMd">导出报告</button>
-            <button class="btn ghost mini" @click="print">打印</button>
-          </div>
+    <section class="drawer">
+      <div class="dhead">
+        <div class="dh-t">
+          <h2>{{ VIEWS[tab][0] }}</h2>
+          <p>{{ VIEWS[tab][1] }}</p>
         </div>
-        <button v-if="agentNotice && tab === 'agent'" class="notice print-hide" @click="switchTab('report')">
-          {{ agentNotice }}</button>
-        <div class="dbody" :class="{ flush: tab === 'agent' }">
-          <ReportPanel v-if="tab === 'report'" :result="result" :run-id="runId" @locate="setFocus" />
-          <ScenarioPanel v-if="tab === 'scenario'" :result="result" @show-ring="showRing" />
-          <ProofPanel v-if="tab === 'proof'" :result="result" />
-          <AgentPanel v-if="tab === 'agent'" :center="center" @result="onAgentResult"
-                      @actions="onAgentActions" @pick="onAgentPick" />
-          <Archive v-if="tab === 'archive'" :history="history" :stats="stats" :compare="compareIds"
-                   :comparison="comparison" @load="loadRun" @remove="removeRun" @toggle="toggleCompare" />
-        </div>
+        <button class="fold" @click="drawerOpen = false" title="隐藏右侧面板，地图占满工作区">隐藏面板 ⟩</button>
+      </div>
+      <button v-if="agentNotice && tab === 'agent'" class="notice" @click="switchTab('report')">
+        {{ agentNotice }}</button>
+      <div class="dbody" :class="{ flush: tab === 'agent' }">
+        <ReportPanel v-if="tab === 'report'" :result="result" @locate="setFocus" />
+        <AdvisePanel v-if="tab === 'advise'" :center="center" :label="resultLabel"
+                     @locate="setFocus" @actions="onAgentActions" />
+        <AgentPanel v-if="tab === 'agent'" :center="center" @result="onAgentResult"
+                    @actions="onAgentActions" @pick="onAgentPick" />
+        <Archive v-if="tab === 'archive'" :history="history" :stats="stats" :compare="compareIds"
+                 :comparison="comparison" @load="loadRun" @remove="removeRun" @toggle="toggleCompare" />
+        <SettingsPanel v-if="tab === 'settings'" @changed="onConfigChanged" />
       </div>
     </section>
   </div>
@@ -93,29 +99,29 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import AgentPanel from './components/AgentPanel.vue'
+import AdvisePanel from './components/AdvisePanel.vue'
 import Archive from './components/Archive.vue'
 import MapView from './components/MapView.vue'
-import NavRail from './components/NavRail.vue'
-import ProofPanel from './components/ProofPanel.vue'
 import ReportPanel from './components/ReportPanel.vue'
-import ScenarioPanel from './components/ScenarioPanel.vue'
+import SettingsPanel from './components/SettingsPanel.vue'
 
 const API = import.meta.env.VITE_API_BASE || ''
 
 const NAV = [
   { k: 'report', n: '体检报告', d: 'M4 20V11M10 20V4M16 20v-6M2 20h20' },
-  { k: 'scenario', n: '情景对比', d: 'M12 3l9 5-9 5-9-5 9-5zM3 13l9 5 9-5' },
-  { k: 'proof', n: '计量自证', d: 'M12 3l7 3v6c0 4.5-3 7.4-7 9-4-1.6-7-4.5-7-9V6l7-3zM9 12l2 2 4-4' },
+  { k: 'advise', n: '选址建议', d: 'M12 21s7-5.4 7-11a7 7 0 10-14 0c0 5.6 7 11 7 11zM12 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z' },
   { k: 'agent', n: 'AI 助手', d: 'M21 12a8 8 0 01-8 8H8l-4 3v-4.5A8 8 0 1121 12zM8.5 10.5h7M8.5 14h4' },
-  { k: 'archive', n: '档案对比', d: 'M12 7.5V12l3 2M20.5 12a8.5 8.5 0 11-17 0 8.5 8.5 0 0117 0z' }
+  { k: 'archive', n: '历史档案', d: 'M12 7.5V12l3 2M20.5 12a8.5 8.5 0 11-17 0 8.5 8.5 0 0117 0z' },
+  { k: 'settings', n: '接入设置', d: 'M12 15.5a3.5 3.5 0 100-7 3.5 3.5 0 000 7zM19.4 13a7.6 7.6 0 000-2l1.8-1.4-1.7-3-2.1.9a7.7 7.7 0 00-1.7-1L15.3 6h-3.4l-.4 2.1a7.7 7.7 0 00-1.7 1L7.7 8.2 6 11.2'
+      + ' 7.8 12.6a7.6 7.6 0 000 2L6 16l1.7 3 2.1-.9c.5.4 1.1.8 1.7 1l.4 2.1h3.4l.4-2.1c.6-.2 1.2-.6 1.7-1l2.1.9 1.7-3-1.8-1.4z' }
 ]
 
 const VIEWS = {
-  report: ['生活圈体检报告', '健康分、设施覆盖、可解释指标与已核验盲区清单'],
-  scenario: ['情景与人群对比', '同一批实测耗时重算 5/10/15/20 分钟与三档步速，零新增 API 调用'],
-  proof: ['出网计量与数据溯源', '三栏计量、分服务配额、理想圆对照与证据指纹'],
-  agent: ['AI 规划助手', '大模型自主编排 5 个地图工具，结论回标到地图，轨迹落库可回放'],
-  archive: ['历史档案与跨社区对比', 'SQLite 记录派生结果，点一条即可 0 配额回放']
+  report: ['生活圈体检报告', '健康分、可达圈、导则达标与已核验盲区'],
+  advise: ['选址建议', '按人气代理、同类间距与补盲价值推荐候选点位'],
+  agent: ['AI 规划助手', '大模型自主编排地图工具，结论直接回标到图上'],
+  archive: ['历史档案', '本机 SQLite 记录，点一条即可 0 配额回放'],
+  settings: ['接入设置', '一键切换演示/应用模式，填入你自己的百度 AK 与大模型 Key']
 }
 
 const lat = ref('')
@@ -125,7 +131,6 @@ const running = ref(false)
 const elapsed = ref(0)
 const error = ref('')
 const result = ref(null)
-const runId = ref('')
 const tab = ref('report')
 const agentActions = ref([])
 const mockMode = ref(false)
@@ -136,28 +141,39 @@ const stats = ref({})
 const focus = ref(null)
 const compareIds = ref([])
 const comparison = ref(null)
-const scenarioRing = ref(null)
 const steps = ref([])
 const agentNotice = ref('')
 const activePreset = ref('')
+const drawerOpen = ref(true)
+const consoleOpen = ref(true)
+const runId = ref('')
+const linkCopied = ref(false)
 
-const viewTitle = computed(() => VIEWS[tab.value][0])
-const viewHint = computed(() => VIEWS[tab.value][1])
-const hitRate = computed(() => stats.value.cache_hit_rate == null ? '—'
-  : Math.round(stats.value.cache_hit_rate * 100) + '%')
+const resultLabel = computed(() => result.value?.label || '当前社区')
 
 onMounted(async () => {
   try {
     const h = await (await fetch(`${API}/api/health`)).json()
     mockMode.value = !!h.mock
     quotaOut.value = !!h.quota_exhausted
-  } catch (e) { /* 后端未就绪时不显示提示 */ }
+  } catch (e) { /* 后端未就绪时不显示状态条 */ }
   await refreshLists()
+  await replayFromHash()
+  // 应用已打开时别人发来链接、或自己在地址栏改 hash，也要能直接回放
+  window.addEventListener('hashchange', replayFromHash)
 })
 
 function switchTab(k) {
   tab.value = k
   if (k === 'report') agentNotice.value = ''
+  drawerOpen.value = true   // 收起状态下点左栏任意视图必须把面板叫回来
+}
+
+function badge(it) {
+  if (it.k === 'archive') return stats.value.communities || ''
+  if (it.k === 'agent') return stats.value.agent_turns || ''
+  if (it.k === 'report') return result.value ? '●' : ''
+  return ''
 }
 
 async function refreshLists() {
@@ -172,6 +188,7 @@ async function refreshLists() {
 }
 
 function isActive(p) { return activePreset.value === p.id }
+function histOf(p) { return history.value.find(h => h.label === p.name && h.mode !== 'mock') }
 function usePreset(p) {
   activePreset.value = p.id
   center.value = [p.lat, p.lng]
@@ -189,14 +206,6 @@ function setCenterFromInput() {
   activePreset.value = ''
 }
 function setFocus(f) { focus.value = { ...f, t: Date.now() } }
-function showRing(ring) { scenarioRing.value = ring }
-function exportMd() {
-  const a = document.createElement('a')
-  a.href = `${API}/api/runs/${runId.value}/report.md`
-  a.download = `生活圈体检-${runId.value}.md`
-  a.click()
-}
-function print() { window.print() }
 
 // 智能体产出的体检结果写进报告视图，但不把用户从对话框里拽走
 function onAgentResult(res) {
@@ -206,6 +215,14 @@ function onAgentResult(res) {
 function onAgentActions(actions) { agentActions.value = actions }
 function onAgentPick(c) { onPick(c) }
 
+// 接入设置里切换模式后，顶栏标识与配额提示要跟上
+async function onConfigChanged(data) {
+  mockMode.value = !!data.mock
+  quotaOut.value = !!data.quota_exhausted
+  if (data.mock) result.value = null
+  await refreshLists()
+}
+
 async function runAt(c) { onPick(c); await run() }
 
 async function loadRun(h) {
@@ -213,7 +230,6 @@ async function loadRun(h) {
   runId.value = h.id
   center.value = [h.lat, h.lng]
   switchTab('report')
-  scenarioRing.value = null
 }
 async function removeRun(id) {
   await fetch(`${API}/api/runs/${id}`, { method: 'DELETE' })
@@ -230,8 +246,42 @@ async function toggleCompare(id) {
     : null
 }
 
-const PIPELINE = ['逆地理编码定位社区', '18 条射线实测步行耗时（等时圈）', '四类设施检索与语义清洗',
-                  '盲区网格初筛', '批量距离矩阵核验', '情景与人群重算']
+// 分享链接：#run=<id> 打开即从本机 SQLite 回放，0 出网
+async function replayFromHash() {
+  const id = (location.hash.match(/run=([^&]+)/) || [])[1]
+  if (!id) return
+  try {
+    const payload = await (await fetch(`${API}/api/runs/${encodeURIComponent(decodeURIComponent(id))}`)).json()
+    if (!payload || !payload.center) return
+    result.value = payload
+    runId.value = id
+    center.value = [payload.center.lat, payload.center.lng]
+    lat.value = payload.center.lat
+    lng.value = payload.center.lng
+    switchTab('report')
+  } catch (e) { /* 链接里的记录不存在时保持初始视图 */ }
+}
+
+async function copyLink() {
+  if (!runId.value) return
+  const url = `${location.origin}${location.pathname}#run=${encodeURIComponent(runId.value)}`
+  window.history.replaceState(null, '', url)
+  try {
+    await navigator.clipboard.writeText(url)
+  } catch (e) {
+    const ta = document.createElement('textarea')
+    ta.value = url
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    ta.remove()
+  }
+  linkCopied.value = true
+  setTimeout(() => { linkCopied.value = false }, 2400)
+}
+
+const PIPELINE = ['逆地理编码定位社区', '18 条射线实测步行耗时', '四类设施检索与清洗',
+                  '盲区网格初筛', '批量距离核验']
 
 function markSteps(doneUpTo) {
   steps.value = PIPELINE.map((name, i) => ({
@@ -246,9 +296,9 @@ async function run() {
   result.value = null
   runId.value = ''
   agentActions.value = []
-  scenarioRing.value = null
   elapsed.value = 0
   markSteps(1)
+  drawerOpen.value = true
   try {
     const p = presets.value.find(x => x.id === activePreset.value)
     const res = await fetch(`${API}/api/analysis`, {
@@ -270,11 +320,10 @@ async function run() {
 }
 
 async function poll(jobId) {
-  const total = PIPELINE.length - 1
   for (let i = 0; i < 900; i++) {
     await new Promise(r => setTimeout(r, 1000))
     elapsed.value = i + 1
-    markSteps(Math.min(1 + Math.floor(i / 6), total))
+    markSteps(Math.min(1 + Math.floor(i / 4), PIPELINE.length))
     const job = await (await fetch(`${API}/api/analysis/${jobId}`)).json()
     if (job.status === 'done') {
       result.value = job.result
@@ -285,7 +334,7 @@ async function poll(jobId) {
     }
     if (job.status === 'error') {
       error.value = job.quota_exhausted
-        ? '今日步行配额已耗尽：请明日重试，或把 .env 的 BMAP_MOCK 设为 1 走演示模式'
+        ? '今日路线规划配额已耗尽：请明天再跑，或切到演示模式继续演示'
         : job.error
       return
     }
@@ -296,104 +345,155 @@ async function poll(jobId) {
 
 <style scoped>
 .top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 20px;
-  background: linear-gradient(115deg, #0e1a2b, #1b2f4c 55%, #21406b);
-  color: #fff;
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  height: 56px; padding: 0 18px;
+  background: var(--surface); border-bottom: 1px solid var(--line);
 }
-.brand { display: flex; align-items: center; gap: 12px; }
-.logo {
-  width: 42px; height: 42px; flex: none;
-  display: grid; place-items: center;
-  border-radius: 14px;
-  background: linear-gradient(135deg, #2f6fed, #6d5efc);
-  font-size: 15px; font-weight: 700;
-  box-shadow: 0 6px 18px rgba(47, 111, 237, .45);
+.brand { display: flex; align-items: center; gap: 11px; }
+.mark {
+  width: 34px; height: 34px; flex: none; display: grid; place-items: center;
+  border-radius: 8px; font-size: 14px; font-weight: 700;
+  background: var(--accent); color: #fff;
 }
-.brand h1 { font-size: 16px; font-weight: 600; }
-.brand p { font-size: 11px; opacity: .62; margin-top: 3px; }
-.pills { display: flex; flex-wrap: wrap; gap: 7px; justify-content: flex-end; }
-.pills .pill { background: rgba(255, 255, 255, .1); color: #dbe7f7; }
-.pills .pill.ok { background: rgba(23, 178, 106, .18); color: #6ee7b0; }
-.pills .pill.warn { background: rgba(245, 166, 35, .2); color: #ffd28a; }
-.pills .pill.bad { background: rgba(229, 72, 77, .2); color: #ffb0b3; }
+.brand h1 { font-size: 14.5px; }
+.brand p { font-size: 10.5px; color: var(--dim); margin-top: 2px; }
+.pills { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; justify-content: flex-end; }
+.pill.cur { border-color: var(--line-2); color: var(--text); background: var(--surface-2); }
+.pill.cur b { color: var(--accent); font-size: 14px; margin: 0 1px; }
+.btn.ghost.done { border-color: #bcd6c6; color: var(--good); background: #eef6f0; }
 
+/* 列宽走变量：两种隐藏（左栏 / 右面板）可以任意组合，不用穷举四种 grid 写法 */
 .shell {
+  --rail: 62px; --left: 288px; --right: 408px;
   display: grid;
-  grid-template-columns: 74px 292px minmax(0, 1fr) 412px;
-  gap: 12px;
-  padding: 12px 16px 16px;
-  height: calc(100vh - 68px);
+  grid-template-columns: var(--rail) var(--left) minmax(0, 1fr) var(--right);
+  gap: 10px; padding: 10px 14px 14px;
+  height: calc(100vh - 56px);
+  transition: grid-template-columns .22s ease;
 }
-.railslot { align-self: stretch; }
-.col { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
-.stage { border-radius: 18px; overflow: hidden; box-shadow: var(--shadow); min-height: 0; }
+.shell.folded { --right: 0px; }
+.shell.hide-left { --left: 0px; }
 
-.presets { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+/* 左导轨：实色，激活用细条 + 淡底 */
+.rail {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 10px 6px; background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--r);
+}
+.rbtn {
+  position: relative; width: 100%; padding: 8px 2px 6px; border-radius: 9px;
+  background: none; border: none; cursor: pointer; color: var(--dim);
+  font-family: var(--font-num); font-size: 9.5px; letter-spacing: .6px; line-height: 1.3;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  transition: color .15s, background .15s;
+}
+.rbtn:hover { color: var(--text); background: var(--surface-2); }
+.rbtn.on { color: var(--accent); background: var(--accent-soft); }
+.rbtn.on::before {
+  content: ''; position: absolute; left: -6px; top: 50%; transform: translateY(-50%);
+  width: 3px; height: 18px; border-radius: 2px; background: var(--accent);
+}
+.rbtn em {
+  position: absolute; top: -4px; right: 2px; font-style: normal; font-size: 9px; font-weight: 700;
+  min-width: 14px; padding: 1px 3px; border-radius: 7px; text-align: center;
+  background: var(--accent); color: #fff;
+}
+.rfoot {
+  margin-top: auto; padding: 5px 0; width: 100%; text-align: center;
+  font-family: var(--font-num); font-size: 9px; letter-spacing: 1px; border-radius: 7px;
+  background: #eef6f0; color: var(--good); border: 1px solid #bcd6c6;
+}
+.rfoot.warn { background: #f8f2e6; color: var(--warn); border-color: #e2d0b4; }
+
+.console {
+  display: flex; flex-direction: column; gap: 14px; padding: 13px; min-width: 0;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r);
+  overflow-y: auto; transition: opacity .18s ease, padding .22s ease, border-width .22s ease;
+}
+.shell.hide-left .console { opacity: 0; padding: 0; border-width: 0; pointer-events: none; overflow: hidden; }
+.chead { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-bottom: -4px; }
+.console section + section { padding-top: 13px; border-top: 1px dashed var(--line); }
+.console .eyebrow { margin-bottom: 9px; }
+
+.presets { display: flex; flex-direction: column; gap: 6px; margin-bottom: 13px; }
 .preset {
-  width: 100%;
+  position: relative; width: 100%; text-align: left; cursor: pointer;
   display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
-  padding: 9px 11px; border-radius: 12px;
-  background: #f7f9fd; border: 1px solid var(--line);
-  color: var(--text); cursor: pointer; text-align: left;
-  transition: border-color .16s, background .16s, transform .16s;
+  padding: 9px 42px 9px 11px; border-radius: 9px;
+  background: var(--surface-2); border: 1px solid var(--line); color: var(--text);
+  transition: border-color .15s, background .15s, transform .15s;
 }
 .preset b { font-size: 12.5px; font-weight: 600; }
-.preset span { font-size: 10.5px; color: var(--muted); }
-.preset:hover { transform: translateX(2px); border-color: #c8d8f5; }
-.preset.on { background: linear-gradient(135deg, #eaf1ff, #f1ecff); border-color: #a9c4fb; }
-.coords { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
-.coords label { font-size: 11px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
-.picked { font-size: 11px; color: var(--muted); margin: -2px 0 10px; }
-.picked code { color: var(--brand); font-size: 11.5px; }
-.tip { font-size: 11px; color: var(--muted); line-height: 1.65; margin-top: 10px; }
-.err { color: var(--bad); font-size: 11.5px; margin-top: 9px; line-height: 1.6; }
+.preset span { font-size: 10px; color: var(--dim); }
+.preset em {
+  position: absolute; right: 11px; top: 50%; transform: translateY(-50%);
+  font-style: normal; font-size: 16px; font-weight: 700; color: var(--dim);
+}
+.preset:hover { transform: translateX(2px); border-color: var(--line-2); }
+.preset.on { border-color: var(--accent); background: var(--accent-soft); }
+.preset.on em { color: var(--accent); }
 
-.hud { list-style: none; margin-top: 12px; font-size: 11px; line-height: 1.95; color: #a7b3c5; }
-.hud li { display: flex; align-items: center; gap: 6px; }
+.coords { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 9px; }
+.coords label { font-size: 10px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+.picked { font-size: 10.5px; color: var(--dim); margin: -2px 0 9px; }
+.picked code { color: var(--accent); font-size: 11.5px; }
+.tip { font-size: 10.5px; color: var(--dim); line-height: 1.7; margin-top: 9px; }
+.err { color: var(--bad); font-size: 11px; margin-top: 9px; line-height: 1.6; }
+
+.hud { list-style: none; margin-top: 11px; font-size: 11px; line-height: 1.95; color: var(--dim); }
+.hud li { display: flex; align-items: center; gap: 7px; }
 .hud li.done { color: var(--good); }
-.hud li.run { color: var(--brand); font-weight: 600; }
-.hud li.run i { animation: pulse 1s ease-in-out infinite; }
+.hud li.run { color: var(--accent); font-weight: 600; }
+.hud li.run i { animation: spin 1.4s linear infinite; }
 .hud i { font-style: normal; width: 11px; display: inline-block; }
-@keyframes pulse { 50% { opacity: .3; } }
 
-.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.tile {
-  background: linear-gradient(160deg, #f8fafd, #eef3fb);
-  border: 1px solid var(--line);
-  border-radius: 12px; padding: 10px 6px; text-align: center;
+.stage { position: relative; border-radius: var(--r); overflow: hidden;
+  border: 1px solid var(--line); min-height: 0; }
+.unfold {
+  position: absolute; right: 12px; top: 12px; z-index: 12; width: auto;
+  padding: 7px 12px; font-size: 11.5px; border-radius: 8px; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--line-2); color: var(--muted);
+  box-shadow: var(--shadow); transition: border-color .15s, color .15s;
 }
-.tile b { display: block; font-size: 17px; color: var(--ink); font-variant-numeric: tabular-nums; }
-.tile span { font-size: 10px; color: var(--muted); }
+.unfold.left { left: 12px; right: auto; }
+.unfold:hover { border-color: var(--accent); color: var(--accent); }
 
-.right { overflow: hidden; }
-.drawer { display: flex; flex-direction: column; height: 100%; padding: 14px 16px; }
-.dhead { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
-.dhead h2 { font-size: 15px; font-weight: 600; }
-.dhead p { font-size: 11px; color: var(--muted); margin-top: 3px; line-height: 1.5; }
-.dacts { display: flex; gap: 6px; flex: none; }
+.drawer {
+  display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  padding: 13px 14px; background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--r);
+  transition: opacity .18s ease, padding .22s ease, border-width .22s ease;
+}
+.shell.folded .drawer { opacity: 0; padding: 0; border-width: 0; pointer-events: none; overflow: hidden; }
+.dhead { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 12px; }
+.dh-t { flex: 1; min-width: 0; }
+.dhead h2 { font-size: 14px; }
+.dhead p { font-size: 10.5px; color: var(--dim); margin-top: 3px; line-height: 1.5; }
+.fold {
+  flex: none; width: auto; padding: 6px 10px; font-size: 11px; border-radius: 8px; cursor: pointer;
+  background: var(--surface-2); border: 1px solid var(--line); color: var(--muted); box-shadow: none;
+}
+.fold:hover { border-color: var(--accent); color: var(--accent); }
 .notice {
-  width: 100%; margin: -4px 0 10px; padding: 9px 11px;
-  font-size: 11px; text-align: left; border-radius: 10px; line-height: 1.5;
-  background: #eef4ff; color: #1d4fa8; border: 1px dashed #b9cffb;
+  width: 100%; margin: -2px 0 10px; padding: 9px 11px; font-size: 11px; text-align: left;
+  border-radius: 9px; line-height: 1.5; cursor: pointer;
+  background: var(--accent-soft); color: var(--accent); border: 1px dashed var(--accent-2);
 }
-.dbody { flex: 1; min-height: 0; overflow-y: auto; padding-right: 2px; }
+.dbody { flex: 1; min-height: 0; overflow-y: auto; padding-right: 3px; }
 .dbody.flush { overflow: hidden; display: flex; flex-direction: column; }
 
-@media (max-width: 1440px) {
-  .shell { grid-template-columns: 70px 258px minmax(0, 1fr) 358px; padding: 10px 12px 12px; gap: 10px; }
+@media (max-width: 1400px) {
+  .shell { --rail: 58px; --left: 262px; --right: 372px; }
 }
-/* 窄屏不藏控件：整块工作区横向滚动，避免"开始体检"这种主操作被断点吃掉 */
-@media (max-width: 1180px) {
-  .shell { min-width: 1160px; }
-  body { overflow-x: auto; }
+@media (max-width: 1160px) {
+  .brand p { display: none; }
+  .shell { --rail: 54px; --left: 238px; --right: 330px; gap: 8px; padding: 8px 10px 10px; }
 }
 @media print {
-  .top, .railslot, .left, .stage, .dacts, .notice { display: none !important; }
+  .top, .rail, .console, .stage, .fold, .unfold, .notice { display: none !important; }
   .shell { display: block; height: auto; padding: 0; }
-  .drawer { box-shadow: none; border: none; padding: 0; height: auto; }
+  .drawer, .console { opacity: 1; padding: 0; border: none; }
+  .console { display: none; }
 }
 </style>

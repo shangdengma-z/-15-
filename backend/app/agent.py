@@ -11,6 +11,8 @@ import logging
 import re
 
 from .analysis import run_analysis
+from . import db
+from .advisor import BIZ_TYPES, advise
 from .baidu_client import BmapError, client, straight_line_m
 from .config import CATEGORIES, settings
 from .llm import LLMError, llm
@@ -27,9 +29,11 @@ SYSTEM_PROMPT = """你是"15 分钟生活圈"社区体检与规划顾问，服�
 2. 用户提到地名或社区名时，先用 geocode 取坐标再做 health_check；用户说"这里/该社区"指的是当前地图中心点。
 3. 判断某类设施是否可达，用 nearest_facility 拿真实步行时间，不要用直线距离下结论。
 4. 数据不足以支撑结论时，明确说明缺什么，不要强行下判断。
-5. 回答用中文，控制在 350 字以内，按三段组织：诊断结论 / 数据依据 / 规划建议（不超过 3 条，要具体可执行）。
-6. 不要输出 Markdown 表格和代码块。
-7. 面向的是非技术读者：回答中不要出现英文字段名、内部变量名或 JSON 键（如 blindspot_count），一律改用中文业务表述。"""
+5. 用户问"该开在哪 / 选址 / 补哪个点位"时，先确保该点位已体检（必要时调用 health_check），
+   再调用 site_advice 拿候选点位；建议必须落在工具返回的候选点上，不许自造坐标。
+6. 回答用中文，控制在 350 字以内，按三段组织：诊断结论 / 数据依据 / 规划建议（不超过 3 条，要具体可执行）。
+7. 不要输出 Markdown 表格和代码块。
+8. 面向的是非技术读者：回答中不要出现英文字段名、内部变量名或 JSON 键（如 blindspot_count），一律改用中文业务表述。"""
 
 _COORD = lambda name, desc: {"type": "number", "description": f"{desc}（{name}）"}
 
@@ -73,6 +77,17 @@ TOOLS = [
             "radius": {"type": "integer", "description": "检索半径（米），默认 1500，上限 3000"},
             "limit": {"type": "integer", "description": "返回条数上限，默认 10"}},
             "required": ["query", "lat", "lng"]}}},
+    {"type": "function", "function": {
+        "name": "site_advice",
+        "description": "在已体检过的社区里，为某类业态推荐 15 分钟圈内的候选点位：按人气（住宅小区密度）、"
+                       "与同类设施的距离、是否填补已核验盲区打分，并用真实步行路线复核候选点到社区中心的可达性。"
+                       "调用前该点位必须已做过体检，否则返回错误提示。",
+        "parameters": {"type": "object", "properties": {
+            "lat": _COORD("纬度", "社区中心纬度"), "lng": _COORD("经度", "社区中心经度"),
+            "biz": {"type": "string", "enum": list(BIZ_TYPES),
+                    "description": "业态：pharmacy 药店 / market 生鲜菜店 / elderly 养老驿站 / "
+                                   "childcare 托幼 / clinic 诊所或卫生服务"}},
+            "required": ["lat", "lng", "biz"]}}},
 ]
 
 
@@ -176,8 +191,23 @@ async def _search_poi(run: AgentRun, query: str, lat, lng, radius=1500, limit=10
     return {"query": str(query), "radius_m": radius, "count": len(rows), "items": items}
 
 
+async def _site_advice(run: AgentRun, lat, lng, biz: str) -> dict:
+    """选址建议复用已建档的体检结果：没体检过就先让模型自己去体检，而不是这里偷偷重跑一遍。"""
+    lat, lng = _num(lat, "lat"), _num(lng, "lng")
+    if biz not in BIZ_TYPES:
+        return {"error": f"未知业态 {biz}，可用：{list(BIZ_TYPES)}"}
+    payload = await asyncio.to_thread(db.find_scene_run, (lat, lng))
+    if not payload:
+        return {"error": "该点位还没有体检记录，请先调用 health_check"}
+    out = await advise(payload, biz, top=3)
+    for c in out["candidates"]:
+        run.map_actions.append({"kind": "site", "lat": c["lat"], "lng": c["lng"],
+                                "label": f"候选 {out['biz_name']} {c['score']} 分"})
+    return out
+
+
 HANDLERS = {"geocode": _geocode, "health_check": _health_check, "nearest_facility": _nearest_facility,
-            "walking_time": _walking_time, "search_poi": _search_poi}
+            "walking_time": _walking_time, "search_poi": _search_poi, "site_advice": _site_advice}
 
 
 async def _dispatch(run: AgentRun, name: str, args: dict) -> dict:
@@ -210,6 +240,13 @@ def _summarize(name: str, out: dict) -> str:
         return f"真实步行 {out['duration_min']} 分钟 / {out['distance_m']} 米"
     if name == "search_poi":
         return f"「{out['query']}」{out['radius_m']} 米内检索到 {out['count']} 处"
+    if name == "site_advice":
+        cand = out.get("candidates") or []
+        if not cand:
+            return f"{out['biz_name']}：圈内没有达到人气门槛的候选点"
+        return (f"{out['biz_name']}：{len(cand)} 个候选，最优 {cand[0]['score']} 分"
+                f"（500m 内 {cand[0]['housing_within_500m']} 个小区，"
+                f"距同类 {cand[0]['nearest_same_type_m'] or '—'} 米）")
     return "完成"
 
 

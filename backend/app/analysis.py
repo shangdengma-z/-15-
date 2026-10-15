@@ -23,14 +23,26 @@ from .isochrone import (
     ring_from_series,
 )
 from .poi import fetch_categories
+from .standards import compliance_check
 
 GRID_STEP_M = 300       # 盲区初筛网格步长
+GAP_WEIGHT = 45         # 盲区面积占比满分扣量：完全覆盖时 −45，占比按格数×0.09km² / 圈内面积
 REFERENCE_SPEED = 1.25  # 百度步行路径规划的隐含步速（m/s），人群换算以此为基准
+
+
+def gap_area_share(verified_cells: int, area_km2: float) -> float:
+    """已核验盲区格覆盖的面积占 15 分钟圈面积的比例（封顶 1）。
+
+    一格代表 300m×300m 邻域，是网格尺度的近似而非边界精确面积；措辞与 `blindspot_clusters` 一致。
+    """
+    if area_km2 <= 0:
+        return 0.0
+    return min(1.0, round(verified_cells * (GRID_STEP_M / 1000.0) ** 2 / area_km2, 4))
 CROWD_SPEEDS = {"adult": 1.25, "elderly": 0.8, "child": 0.9}
 SCENARIO_MINUTES = (5, 10, 15, 20)
 
 
-def _grid_in_ring(ring: list) -> list:
+def grid_in_ring(ring: list) -> list:
     """在 15 分钟圈外接盒上铺网格，保留圈内点。ring 为 [lng,lat][]。"""
     lngs = [p[0] for p in ring]
     lats = [p[1] for p in ring]
@@ -50,7 +62,8 @@ def _grid_in_ring(ring: list) -> list:
 
 
 def _min_straight_m(pt: tuple, pois: list) -> float:
-    return min((straight_line_m(pt, (p["lng"], p["lat"])) for p in pois), default=1e9)
+    """网格点 (lng,lat) 到设施池的直线最近距离；straight_line_m 约定是 (lat,lng)，此处显式换算。"""
+    return min((straight_line_m((pt[1], pt[0]), (p["lat"], p["lng"])) for p in pois), default=1e9)
 
 
 def required_pois(pois: dict) -> dict:
@@ -78,7 +91,7 @@ def _missing_near(pt: tuple, pois_by_cat: dict, cat_keys: list, limit_m: int) ->
 
 async def identify_blindspots(ring15: list, pois: dict) -> list:
     """1) 网格初筛（四大类 + 赛题必核单品）；2) 用批量步行距离矩阵核验，剔除直线误报。"""
-    grid = _grid_in_ring(ring15)
+    grid = grid_in_ring(ring15)
     req = required_pois(pois)
     complete = retrieval_completeness()
     cat_keys = list(CATEGORIES.keys())
@@ -97,7 +110,7 @@ async def identify_blindspots(ring15: list, pois: dict) -> list:
                                "undetermined": [CATEGORIES[m]["name"] for m in undetermined],
                                "_missing_keys": missing, "_missing_req": missing_req})
     candidates.sort(key=lambda c: len(c["_missing_keys"]) + len(c["_missing_req"]), reverse=True)
-    # 核验上限与每类比对半径数走配置：步行服务仅 3 QPS，这两个数是冷跑时长的主要旋钮
+    # 核验上限与每类比对半径数走配置：这两个数决定冷跑时长，也决定「疑似」格子的多少
     verify = candidates[:settings.max_candidates]
 
     # 核验：候选点到该类最近 N 个 POI 的真实步行距离必须也超限才判为盲区
@@ -108,8 +121,8 @@ async def identify_blindspots(ring15: list, pois: dict) -> list:
                   for k in cand["_missing_req"]]
         tasks = []
         for name, limit, pool in specs:
-            nearest = sorted(pool, key=lambda p: straight_line_m((cand["lng"], cand["lat"]),
-                                                                 (p["lng"], p["lat"])))[:settings.verify_nearest]
+            nearest = sorted(pool, key=lambda p: straight_line_m((cand["lat"], cand["lng"]),
+                                                                 (p["lat"], p["lng"])))[:settings.verify_nearest]
             if nearest:
                 tasks.append(((name, limit),
                               client.distance_matrix([(cand["lat"], cand["lng"])],
@@ -130,6 +143,56 @@ async def identify_blindspots(ring15: list, pois: dict) -> list:
 
 def _public(cand: dict) -> dict:
     return {k: v for k, v in cand.items() if not k.startswith("_")}
+
+
+CLUSTER_LINK_M = 450   # 300m 网格的邻格间距（含对角约 424m），用于把连片网格并成一个片区
+
+
+def cluster_blindspots(blindspots: list) -> list:
+    """把连片的盲区网格并成「缺口片区」。
+
+    逐格清单是给地图表达形状用的；给人读的时候，一片 300m×300m 连续 11 格都缺菜市场
+    应该是一行「一个约 1 km² 的连片缺口」，而不是 11 行重复文字。
+    """
+    pending = list(blindspots)
+    clusters = []
+    while pending:
+        seed = pending.pop(0)
+        group, frontier = [seed], [seed]
+        while frontier:
+            c = frontier.pop()
+            for n in pending[:]:
+                if straight_line_m((c["lat"], c["lng"]), (n["lat"], n["lng"])) <= CLUSTER_LINK_M:
+                    pending.remove(n)
+                    group.append(n)
+                    frontier.append(n)
+        tally: dict = {}
+        verified_names: set = set()
+        for g in group:
+            for name in (g.get("missing") or []):
+                tally[name] = tally.get(name, 0) + 1
+                verified_names.add(name)
+            for name in (g.get("missing_preview") or []):
+                tally[name] = tally.get(name, 0) + 1
+        ver = len([g for g in group if g.get("verified")])
+        und = sorted({u for g in group for u in (g.get("undetermined") or [])})
+        clusters.append({
+            "cells": len(group),
+            "area_km2": round(len(group) * (GRID_STEP_M / 1000.0) ** 2, 2),
+            "lat": round(sum(g["lat"] for g in group) / len(group), 5),
+            "lng": round(sum(g["lng"] for g in group) / len(group), 5),
+            "bbox": [round(min(g["lat"] for g in group), 5), round(min(g["lng"] for g in group), 5),
+                     round(max(g["lat"] for g in group), 5), round(max(g["lng"] for g in group), 5)],
+            "missing": [n for n, _ in sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))],
+            "missing_cells": tally,
+            "verified_names": sorted(verified_names),
+            "verified_cells": ver,
+            "suspect_cells": len(group) - ver,
+            "undetermined": und,
+            "level": "连片已核验" if ver == len(group) else ("已核验" if ver else "待核验"),
+        })
+    clusters.sort(key=lambda c: (-c["cells"], -c["verified_cells"]))
+    return clusters
 
 
 def coverage_stats(pois: dict, ring15: list) -> dict:
@@ -223,33 +286,40 @@ def metric_block(score: int, coverage: dict, blindspots: list, area_km2: float) 
     empty_cats = sum(1 for v in coverage.values() if v["inside"] == 0)
     verified = len([b for b in blindspots if b.get("verified")])
     undet = len([b for b in blindspots if b.get("undetermined")])
+    share = gap_area_share(verified, area_km2)
     return [
         {"key": "health_score", "label": "生活圈健康分", "value": score, "unit": "分",
-         "formula": "100 − 12×圈内零覆盖类别数 − 8×min(已核验盲区数, 5)",
-         "note": f"零覆盖类别 {empty_cats}/4，已核验盲区 {verified} 处"},
+         "formula": f"100 − 12×圈内零覆盖类别数 − {GAP_WEIGHT}×已核验盲区面积占比",
+         "note": f"零覆盖类别 {empty_cats}/4；已核验 {verified} 格 × 0.09 km² ÷ {area_km2} km²"
+                 f" = 占比 {round(share * 100)}%，本项扣 {round(GAP_WEIGHT * share)} 分"},
         {"key": "coverage", "label": "设施覆盖密度", "value": round(sum(
             v["inside"] for v in coverage.values()) / max(area_km2, 0.01), 1),
          "unit": "处/km²", "formula": "圈内四类设施合计 ÷ 15 分钟圈面积(km²)",
          "note": "面积由 15 分钟等时环鞋带公式 + 中位纬度校正求得"},
-        {"key": "blindspot", "label": "服务盲区", "value": verified, "unit": "处",
+        {"key": "blindspot", "label": "服务盲区", "value": verified, "unit": "格",
          "formula": "直线初筛命中 且 批量距离矩阵到最近 N 个设施均 > 阈值",
-         "note": f"另有 {undet} 处因检索未查全记为无法判定，不计入扣分"},
+         "note": f"连片后为 {len(cluster_blindspots(blindspots))} 个片区；"
+                 f"另有 {undet} 格因检索未查全记为无法判定，不计入扣分"},
     ]
 
 
 async def run_analysis(center: tuple) -> dict:
     t0 = time.monotonic()
     client.reset_metrics()
-    # 等时圈（步行 3 QPS）与 POI 检索（地点检索 30 QPS）互不依赖，并发跑可整段省掉 POI 排队时间
+    # 等时圈（路线规划）与 POI 检索（地点检索）互不依赖，并发跑可整段省掉 POI 排队时间
     iso, pois, place = await asyncio.gather(compute_isochrones(center), fetch_categories(center),
                                             client.regeo(center))
     ring15 = iso["rings"]["15"]
     coverage = coverage_stats(pois, ring15)
     blindspots = await identify_blindspots(ring15, pois)
+    area = polygon_area_km2(ring15)
+    # 扣分不数"处数"（格子越密越多，5 格就封顶，五个社区挤在三档没有区分度），
+    # 改数"已核验盲区占圈内面积的比例"：尺度无关、可解释、并且连片缺口越大扣得越多
+    verified_cells = len([b for b in blindspots if b.get("verified")])
+    gap_share = gap_area_share(verified_cells, area)
     score = max(0, min(100, round(
         100 - sum(12 * (1 if coverage[k]["inside"] == 0 else 0) for k in CATEGORIES)
-        - 8 * min(len([b for b in blindspots if b.get("verified")]), 5))))
-    area = polygon_area_km2(ring15)
+        - GAP_WEIGHT * gap_share)))
     scenarios = build_scenarios(center, iso["series"], pois)
     label = " ".join(x for x in [place.get("district"), place.get("town") or place.get("street")] if x)
     return {
@@ -260,9 +330,12 @@ async def run_analysis(center: tuple) -> dict:
         "series": iso["series"],
         "pois": pois,
         "coverage": coverage,
+        "standards": compliance_check(center, pois, ring15),
         "blindspots": blindspots,
+        "blindspot_clusters": cluster_blindspots(blindspots),
         "health_score": score,
         "area_km2": area,
+        "gap_share": gap_share,
         "detour": detour_residual(center, iso["heat"]),
         "scenarios": scenarios,
         "metrics": metric_block(score, coverage, blindspots, area),

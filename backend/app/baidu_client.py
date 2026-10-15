@@ -28,7 +28,7 @@ RETRYABLE = {4, 10, 401}
 
 
 def _service_of(path: str) -> str:
-    """百度按服务分别限流（步行 3 QPS / 地点检索 30 QPS / 地理编码 10 QPS），故每服务独立配额。
+    """百度按服务分别限流（路线规划 30 QPS / 地点检索 30 QPS / 地理编码 10 QPS），故每服务独立配额。
     注意用子串而非 "/geocoding"：正/逆地理编码共用同一个地理编码配额池。"""
     if "distancematrix" in path:
         return "distancematrix"
@@ -68,13 +68,8 @@ class TokenBucket:
 
 class BmapClient:
     def __init__(self):
-        # 每个服务一套「令牌桶 + 并发闸」：步行是硬瓶颈（3 QPS），地点检索可放开到 25 QPS
-        limits = {
-            "direction": (settings.qps, settings.concurrency),
-            "distancematrix": (settings.qps, settings.concurrency),
-            "place": (settings.place_qps, settings.place_concurrency),
-            "geocoding": (settings.geo_qps, settings.geo_concurrency),
-        }
+        # 每个服务一套「令牌桶 + 并发闸」，按服务分桶后互不拖累（配额档位可在接入设置里运行时改）
+        limits = self._limits()
         self.buckets = {svc: TokenBucket(q) for svc, (q, _) in limits.items()}
         self.sems = {svc: asyncio.Semaphore(c) for svc, (_, c) in limits.items()}
         self.cache_dir = Path(settings.cache_dir)
@@ -89,6 +84,20 @@ class BmapClient:
         self.matrix_ok = True   # 距离矩阵服务可用性开关
         self.quota_exhausted = False  # 日配额耗尽熔断：置位后不再出网，只走缓存
         self._http = httpx.AsyncClient(timeout=10, follow_redirects=False)
+
+    def _limits(self) -> dict:
+        return {
+            "direction": (settings.qps, settings.concurrency),
+            "distancematrix": (settings.qps, settings.concurrency),
+            "place": (settings.place_qps, settings.place_concurrency),
+            "geocoding": (settings.geo_qps, settings.geo_concurrency),
+        }
+
+    def reconfigure(self) -> None:
+        """按当前 settings 重建令牌桶与并发闸：配额档位换了不用重启进程。"""
+        limits = self._limits()
+        self.buckets = {svc: TokenBucket(q) for svc, (q, _) in limits.items()}
+        self.sems = {svc: asyncio.Semaphore(c) for svc, (_, c) in limits.items()}
 
     def reset_metrics(self):
         """每次体检任务开始时清零，使 meta 指标反映本轮真实情况（而非进程累积）。"""
@@ -294,6 +303,46 @@ class BmapClient:
         if "geocoding" in path:
             return {"status": 0, "result": {"location": {"lat": 39.908, "lng": 116.397}}}
         return {"status": 0, "result": []}
+
+
+async def probe_ak(ak: str, sk: str = "", center: tuple = (39.908, 116.397)) -> tuple:
+    """真实连通性校验：用与本项目一致的圆形检索探一次 AK，不走缓存、不进令牌桶。
+
+    判过只看 `status == 0`（AK 被识别且服务可访问）。**不把"有数据"当硬条件**：
+    实测 status=0 但 result 为空是真实存在的情形（多为 SN 校验 / IP 白名单 / 该应用未开通地点检索），
+    这时给出一条明确的提醒而不是把用户能用的 AK 判死。
+    """
+    if not ak or len(ak) < 16:
+        return False, "AK 形似不完整（少于 16 位）"
+    params = {"ak": ak, "query": "药店", "location": f"{center[0]},{center[1]}",
+              "radius": 3000, "page_size": 20, "page_num": 0, "output": "json"}
+    if sk:
+        path = "/place/v2/search"
+        items = {k: v for k, v in params.items() if v != ""}
+        qs = "&".join(f"{k}={items[k]}" for k in sorted(items))
+        params["sn"] = hashlib.md5(f"{path}?{qs}{sk}".encode()).hexdigest()
+    try:
+        async with httpx.AsyncClient(timeout=12) as http:
+            r = await http.get(f"{HOST}/place/v2/search", params=params)
+            data = r.json()
+        status = data.get("status")
+        message = data.get("message") or data.get("msg") or ""
+        # 实测 place/v2/search 把明细放在**顶层 results**（不是 result.results）；
+        # 仍兼容 result 为 list/dict 的形态，防止信封结构变化时把可用 AK 误判成无效
+        res = data.get("result")
+        nested = (res if isinstance(res, list)
+                  else ((res or {}).get("results") if isinstance(res, dict) else [])) or []
+        rows = data.get("results") or nested
+        if status != 0:
+            return False, f"百度返回 status={status} {message}".strip()
+        if rows:
+            tag = "（含 SN 签名）" if sk else ""
+            return True, (f"圆形检索返回 {len(rows)} 条 / 命中总数 {data.get('total')}，"
+                          f"样例「{rows[0].get('name')}」{tag}")
+        return False, ("AK 被识别（status=0）但没有明细数据：多为该应用要求 SN 校验或绑定 IP 白名单，"
+                       "请把 SK 填上再测一次；仍为空则到控制台核对应用类型与白名单")
+    except (httpx.HTTPError, ValueError) as e:
+        return False, f"网络或响应异常：{type(e).__name__} {str(e)[:120]}".strip()
 
 
 def straight_line_m(a: tuple, b: tuple) -> float:

@@ -2358,10 +2358,200 @@
    "evidence_complete": true
   }
  },
+ "standards": {
+  "items": [
+   {
+    "name": "便利店 / 超市",
+    "ref_m": 300,
+    "inside": 6,
+    "nearest_m": 230,
+    "nearest_name": "咕噜便利店",
+    "status": "达标",
+    "basis": "GB50180 五分钟生活圈"
+   },
+   {
+    "name": "菜市场 / 生鲜",
+    "ref_m": 500,
+    "inside": 0,
+    "nearest_m": 1315,
+    "nearest_name": "兆军盛菜市场",
+    "status": "缺口",
+    "basis": "上海 15 分钟导则"
+   },
+   {
+    "name": "药店",
+    "ref_m": 500,
+    "inside": 1,
+    "nearest_m": 121,
+    "nearest_name": "金象大药房(地外店)",
+    "status": "达标",
+    "basis": "上海 15 分钟导则"
+   },
+   {
+    "name": "社区卫生服务",
+    "ref_m": 1000,
+    "inside": 3,
+    "nearest_m": 139,
+    "nearest_name": "白米社区卫生服务站",
+    "status": "达标",
+    "basis": "GB50180 十分钟生活圈"
+   },
+   {
+    "name": "幼儿园",
+    "ref_m": 500,
+    "inside": 2,
+    "nearest_m": 145,
+    "nearest_name": "北京市东城区向日葵玉河幼儿园",
+    "status": "达标",
+    "basis": "GB50180 五分钟生活圈"
+   },
+   {
+    "name": "小学",
+    "ref_m": 1000,
+    "inside": 1,
+    "nearest_m": 612,
+    "nearest_name": "什刹海小学",
+    "status": "达标",
+    "basis": "GB50180 十分钟生活圈"
+   },
+   {
+    "name": "养老 / 日间照料",
+    "ref_m": 1000,
+    "inside": 2,
+    "nearest_m": 461,
+    "nearest_name": "景山街道居家养老照料中心",
+    "status": "达标",
+    "basis": "上海 15 分钟导则"
+   }
+  ],
+  "passed": 6,
+  "total": 7,
+  "method": "直线最近距离初筛（不再消耗步行配额），路网实测见盲区清单"
+ },
  "blindspots": [
   {
-   "lng": 116.406348,
+   "lng": 116.399318,
    "lat": 39.937218,
+   "missing_preview": [
+    "菜市场"
+   ],
+   "undetermined": [],
+   "missing": [
+    "菜市场"
+   ],
+   "verified": true
+  },
+  {
+   "lng": 116.402833,
+   "lat": 39.937218,
+   "missing_preview": [
+    "菜市场"
+   ],
+   "undetermined": [],
+   "missing": [
+    "菜市场"
+   ],
+   "verified": true
+  },
+  {
+   "lng": 116.399318,
+   "lat": 39.939913,
+   "missing_preview": [
+    "菜市场"
+   ],
+   "undetermined": [],
+   "missing": [
+    "菜市场"
+   ],
+   "verified": true
+  },
+  {
+   "lng": 116.402833,
+   "lat": 39.939913,
+   "missing_preview": [
+    "菜市场"
+   ],
+   "undetermined": [],
+   "missing": [
+    "菜市场"
+   ],
+   "verified": true
+  },
+  {
+   "lng": 116.406348,
+   "lat": 39.939913,
+   "missing_preview": [
+    "菜市场"
+   ],
+   "undetermined": [],
+   "missing": [
+    "菜市场"
+   ],
+   "verified": true
+  },
+  {
+   "lng": 116.399318,
+   "lat": 39.942608,
+   "missing_preview": [
+    "菜市场"
+   ],
+   "undetermined": [],
+   "missing": [
+    "菜市场"
+   ],
+   "verified": true
+  },
+  {
+   "lng": 116.402833,
+   "lat": 39.942608,
+   "missing_preview": [
+    "菜市场"
+   ],
+   "undetermined": [],
+   "missing": [
+    "菜市场"
+   ],
+   "verified": true
+  },
+  {
+   "lng": 116.406348,
+   "lat": 39.942608,
+   "missing_preview": [
+    "菜市场"
+   ],
+   "undetermined": [],
+   "missing": [
+    "菜市场"
+   ],
+   "verified": true
+  },
+  {
+   "lng": 116.409863,
+   "lat": 39.942608,
+   "missing_preview": [
+    "菜市场"
+   ],
+   "undetermined": [],
+   "missing": [
+    "菜市场"
+   ],
+   "verified": true
+  },
+  {
+   "lng": 116.402833,
+   "lat": 39.945303,
+   "missing_preview": [
+    "菜市场"
+   ],
+   "undetermined": [],
+   "missing": [
+    "菜市场"
+   ],
+   "verified": true
+  },
+  {
+   "lng": 116.406348,
+   "lat": 39.945303,
    "missing_preview": [
     "菜市场"
    ],
@@ -2372,8 +2562,36 @@
    "verified": true
   }
  ],
- "health_score": 92,
+ "blindspot_clusters": [
+  {
+   "cells": 11,
+   "area_km2": 0.99,
+   "lat": 39.94138,
+   "lng": 116.40347,
+   "bbox": [
+    39.93722,
+    116.39932,
+    39.9453,
+    116.40986
+   ],
+   "missing": [
+    "菜市场"
+   ],
+   "missing_cells": {
+    "菜市场": 22
+   },
+   "verified_names": [
+    "菜市场"
+   ],
+   "verified_cells": 11,
+   "suspect_cells": 0,
+   "undetermined": [],
+   "level": "连片已核验"
+  }
+ ],
+ "health_score": 68,
  "area_km2": 1.384,
+ "gap_share": 0.7153,
  "detour": {
   "samples": 72,
   "detour_factor_p50": 1.387,
@@ -3135,10 +3353,10 @@
   {
    "key": "health_score",
    "label": "生活圈健康分",
-   "value": 92,
+   "value": 68,
    "unit": "分",
-   "formula": "100 − 12×圈内零覆盖类别数 − 8×min(已核验盲区数, 5)",
-   "note": "零覆盖类别 0/4，已核验盲区 1 处"
+   "formula": "100 − 12×圈内零覆盖类别数 − 45×已核验盲区面积占比",
+   "note": "零覆盖类别 0/4；已核验 11 格 × 0.09 km² ÷ 1.384 km² = 占比 72%，本项扣 32 分"
   },
   {
    "key": "coverage",
@@ -3151,21 +3369,18 @@
   {
    "key": "blindspot",
    "label": "服务盲区",
-   "value": 1,
-   "unit": "处",
+   "value": 11,
+   "unit": "格",
    "formula": "直线初筛命中 且 批量距离矩阵到最近 N 个设施均 > 阈值",
-   "note": "另有 0 处因检索未查全记为无法判定，不计入扣分"
+   "note": "连片后为 1 个片区；另有 0 格因检索未查全记为无法判定，不计入扣分"
   }
  ],
  "meta": {
-  "elapsed_sec": 24.2,
-  "api_calls": 103,
-  "cache_hits": 0,
-  "quota_units": 105,
+  "elapsed_sec": 0.1,
+  "api_calls": 1,
+  "cache_hits": 132,
+  "quota_units": 3,
   "by_service": {
-   "geocoding": 1,
-   "direction": 75,
-   "place": 26,
    "distancematrix": 1
   },
   "place_probes": 11,
@@ -3183,7 +3398,7 @@
     1500
    ],
    "grid_step_m": 300,
-   "max_candidates": 8,
+   "max_candidates": 16,
    "verify_nearest": 3
   },
   "evidence_id": "c9b410049a59e645",

@@ -67,7 +67,8 @@ def save_run(result: dict, label: str = "", archetype: str = "") -> str:
     """写入（或就地更新）一次体检结果，并把盲区/覆盖率展开成可查询列。"""
     meta = result.get("meta", {})
     center = result.get("center", {})
-    mode = "mock" if meta.get("mock") else ("real+降级" if meta.get("degraded") else "real")
+    # 降级是数据质量标记（单独成列），不该把同一个社区裂成两条 scene_key 档案
+    mode = "mock" if meta.get("mock") else "real"
     run_id = scene_key((center.get("lat", 0), center.get("lng", 0)), mode)
     now = NOW()
     with closing(_open()) as c, c:
@@ -138,6 +139,15 @@ def get_run(run_id: str) -> dict | None:
     with closing(_open()) as c:
         row = c.execute("SELECT payload FROM runs WHERE id=?", (run_id,)).fetchone()
     return json.loads(row["payload"]) if row else None
+
+
+def find_scene_run(center: tuple) -> dict | None:
+    """按坐标取已建档的体检结果，供选址等下游能力复用——不再重跑一遍烧配额。"""
+    for mode in ("real", "real+降级", "mock"):   # 中间一项兼容修键之前留下的旧记录
+        payload = get_run(scene_key(center, mode))
+        if payload:
+            return payload
+    return None
 
 
 def delete_run(run_id: str) -> bool:
