@@ -25,6 +25,8 @@ jobs:
         run: python backend/tests/test_modules_offline.py
       - name: Auth layer offline self-test (no DB required)
         run: python backend/tests/test_auth_offline.py
+      - name: Place search offline self-test (mock map)
+        run: python backend/tests/test_search_offline.py
       - name: Account layer on SQLite (no MySQL, no secrets)
         run: python backend/tests/test_auth_sqlite.py
       - name: Multi-user HTTP isolation on SQLite (mock map)

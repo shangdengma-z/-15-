@@ -257,10 +257,73 @@ class BmapClient:
                                   "count": len(out), "stop": stop})
         return out
 
+    async def geocode_detail(self, address: str, city: str = "") -> dict:
+        """正向地理编码明细：坐标 + 百度的 `level`（区划粒度）。
+
+        实测（2026-10-16，本 AK）：区县/县级市/乡镇/村这类区划名都能命中并返回 level
+        （"昆山市"→level=区县），但门牌级地址（"中关村一街18号"）直接 status=1，
+        所以"具体地点"必须走 place/v2/search，两条腿一起用才既到县级市又能搜门店。
+        """
+        data = await self.get("/geocoding/v3/", {"address": address, "city": city or settings.city})
+        r = data.get("result") or {}
+        loc = r.get("location") or {}
+        return {"lat": loc.get("lat"), "lng": loc.get("lng"), "level": r.get("level") or "",
+                "precise": bool(r.get("precise")), "confidence": r.get("confidence", 0)}
+
     async def geocode(self, address: str) -> tuple:
-        data = await self.get("/geocoding/v3/", {"address": address, "city": settings.city})
-        loc = data["result"]["location"]
-        return (loc["lat"], loc["lng"])
+        d = await self.geocode_detail(address)
+        return (d["lat"], d["lng"])
+
+    async def search_region(self, query: str, region: str = "", page_size: int = 10) -> list:
+        """城市内检索（place/v2/search 用 region 而非 location），实测可用，返回带坐标的 POI 列表。"""
+        data = await self.get("/place/v2/search", {
+            "query": query, "region": region or settings.city, "region_limit": "false" if not region else "true",
+            "page_size": page_size, "page_num": 0, "extensions": "all"})
+        return data.get("results") or []
+
+    AREA_LEVELS = {"国家", "省份", "城市", "区县", "乡镇", "村庄", "道路", "地名"}
+
+    async def suggest(self, query: str, region: str = "") -> list:
+        """把"地名/区划/门店"一次搜成候选列表：区划命中在前，POI 命中在后。
+
+        两条上游各走自己的配额池（地理编码 / 地点检索），都不占路线规划的 1 万次/天；
+        区划命中只有中心点，所以 precise 一律标 False，界面上必须让用户看见这个区别。
+        """
+        query = (query or "").strip()[:40]
+        if len(query) < 2:
+            return []
+        out, seen = [], set()
+        try:
+            g = await self.geocode_detail(query, region)
+            if g.get("lat") and g.get("level") in self.AREA_LEVELS:
+                out.append({"name": query, "kind": "region", "level": g["level"],
+                            "lat": g["lat"], "lng": g["lng"], "precise": False,
+                            "address": "", "city": region or "", "district": ""})
+                seen.add(round_key(g["lat"], g["lng"]))
+        except BmapError as e:
+            log.info("suggest geocode miss: %s", e)
+        try:
+            for r in await self.search_region(query, region):
+                loc = r.get("location") or {}
+                lat, lng = loc.get("lat"), loc.get("lng")
+                if lat is None or round_key(lat, lng) in seen:
+                    continue
+                seen.add(round_key(lat, lng))
+                out.append({"name": r.get("name", ""), "kind": "poi", "level": r.get("type", ""),
+                            "lat": lat, "lng": lng, "precise": True,
+                            "address": r.get("address", ""), "city": r.get("city", ""),
+                            "district": r.get("area", "")})
+        except BmapError as e:
+            log.info("suggest place miss: %s", e)
+        # 排序规则（"昆山市中医院"这种查询最容易踩的坑）：
+        #   1) 名称里就含查询串的 POI 放最前——用户要的是那家门店，不是昆山市中心点；
+        #   2) 区划命中紧跟其后，永远留在前几条里：它既是"只想知道县界在哪"的答案，
+        #      也是搜门店时退一步体检整个区划的兜底，不能被 8 条上限挤掉；
+        #   3) 其余 POI 按上游顺序排在后面。
+        exact = [h for h in out if h["kind"] == "poi" and (query in h["name"] or h["name"].startswith(query))]
+        region = [h for h in out if h["kind"] == "region"]
+        rest = [h for h in out if h not in exact and h not in region]
+        return (exact[:5] + region + rest)[:8]
 
     async def regeo(self, point: tuple) -> dict:
         """逆地理编码：给体检记录一个人类可读的社区名（1 次调用，进缓存后零成本）。"""
@@ -292,7 +355,10 @@ class BmapClient:
                 {"distances": [{"distance": round(straight_line_m(o, dd) * random.uniform(1.15, 1.4))}
                                for dd in dests]} for o in origins]}}
         if "place" in path:
-            lat, lng = map(float, params["location"].split(","))
+            if not params.get("location") and str(params.get("query", ""))[-1:] in ("市", "县", "区", "省", "州", "旗", "镇", "乡"):
+                return {"status": 0, "total": 0, "results": []}   # 区划名做城市内检索一般空手而归
+            lat, lng = (map(float, params["location"].split(",")) if params.get("location")
+                        else (39.908, 116.397))
             n = 8 if int(params.get("page_num", 0)) == 0 else 0
             return {"status": 0, "total": n, "results": [
                 {"uid": f"mock-{params['query']}-{i}", "name": f"{params['query']}{i + 1}号",
@@ -304,7 +370,11 @@ class BmapClient:
             return {"status": 0, "result": {"formatted_address": f"模拟市示例区 {lat:.4f},{lng:.4f}",
                     "addressComponent": {"district": "示例区", "town": "示例街道", "street": "示例路"}}}
         if "geocoding" in path:
-            return {"status": 0, "result": {"location": {"lat": 39.908, "lng": 116.397}}}
+            # 用输入串派生一个稳定坐标：同一个词每次 Mock 都落在同一点，演示可复现
+            seed = int(hashlib.md5(params["address"].encode()).hexdigest()[:6], 16)
+            return {"status": 0, "result": {"location": {
+                        "lat": round(31.2 + (seed % 900) / 100, 4), "lng": round(116.4 + (seed % 700) / 100, 4)},
+                    "precise": 0, "confidence": 20, "level": "区县"}}
         return {"status": 0, "result": []}
 
 
@@ -346,6 +416,11 @@ async def probe_ak(ak: str, sk: str = "", center: tuple = (39.908, 116.397)) -> 
                        "请把 SK 填上再测一次；仍为空则到控制台核对应用类型与白名单")
     except (httpx.HTTPError, ValueError) as e:
         return False, f"网络或响应异常：{type(e).__name__} {str(e)[:120]}".strip()
+
+
+def round_key(lat: float, lng: float) -> tuple:
+    """约 10m 精度的坐标指纹，用来给"区划中心"与"同名 POI"去重。"""
+    return (round(lat, 3), round(lng, 3))
 
 
 def straight_line_m(a: tuple, b: tuple) -> float:

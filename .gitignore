@@ -50,3 +50,6 @@ data/cache_acctest_*/
 data/db_acctest_*/
 data/cache_uicheck/
 data/db_uicheck/
+
+# 服务器实用的那份 .env（含真实 AK），永不入库
+deploy/env.server

@@ -20,15 +20,15 @@
       "endpoint": "/place/v2/search",
       "status": "可用",
       "quota": "30 QPS / 10000 次每天",
-      "notes": "列表字段是 results；page_size 请求 30/50 时实测只回 20 条（同赛道实现 nghqqa/evergreen 的实测结论，本项目按实测页容量做查全判据）",
+      "notes": "列表字段是 results；page_size 请求 30/50 时实测只回 20 条（同赛道实现 nghqqa/evergreen 的实测结论，本项目按实测页容量做查全判据）；除圆形检索（带 location）外，城市内检索（带 region、不带 location）同样可用，返回 name/address/area/city/location，用于搜索框的\"精确点位\"腿",
       "evidence": "backend/app/baidu_client.py search_poi() 的 stop_reason 登记"
     },
     "geocoding_v3": {
       "endpoint": "/geocoding/v3/ 与 /reverse_geocoding/v3/",
       "status": "可用",
-      "quota": "10 QPS",
-      "notes": "逆地理编码只到街道/商圈级，不能确认选点落在某个具体小区内部",
-      "evidence": "backend/app/baidu_client.py geocode()/regeo()"
+      "quota": "10 QPS（与路线规划、地点检索分开计）",
+      "notes": "逆地理编码只到街道/商圈级，不能确认选点落在某个具体小区内部；正向编码实测可命中省/市/区县与县级市/乡镇/村并返回 level（\"昆山市\"\"宜川县\"\"北京市朝阳区\"→区县，\"扎尕那村\"→村庄），但门牌级地址（\"中关村一街18号\"）status=1，所以搜索框的\"具体门店\"这一腿必须走地点检索；区划命中的 precise 恒为假——那是区划中心点，界面与报告都要如实标成\"区划中心\"",
+      "evidence": "backend/app/baidu_client.py geocode_detail()/suggest()/regeo()，backend/tests/test_search_offline.py"
     },
     "isochrone_official": {
       "endpoint": "无面向公众的步行等时圈 REST 服务",
@@ -42,6 +42,13 @@
       "status": "未接入",
       "notes": "同赛道实现将其作为第五维路况暴露度（权重 0.15）；本项目两天工期下不引入新口径，避免『缺源退回原比例』的归一化埋雷",
       "decision": "有意不接，登记为后续工作"
+    },
+    "place_suggestion_v1": {
+      "endpoint": "/place/v1/suggestion",
+      "status": "不可用（本 AK 上返回非 JSON）",
+      "quota": "—",
+      "notes": "实测两次（region=中国 / region=北京市）都拿不到 JSON 响应体，故搜索框改用 geocoding/v3 + place/v2/search(region) 两条腿组合，效果覆盖\"到县级市\"的粒度要求，不依赖此接口",
+      "evidence": "2026-10-16 用 backend/.env 的服务端 AK 直连探测"
     }
   },
   "behaviour_facts": [
@@ -71,6 +78,7 @@
       "fact": "无效 AK / 无效大模型 key 都能被一次真实请求识别，并把上游原文带回",
       "evidence": "乱填 AK 返回 status=200「APP不存在，AK有误请检查再重试」；乱填千帆 key 返回 HTTP401 invalid_iam_token；模型名不在套餐白名单返回 HTTP403",
       "impact": "/api/config 默认 verify=true：校验不过 422 且不落地，避免随便填一个也能保存"
-    }
+    },
+    "搜索粒度实测：区划可到县/县级市/乡镇/村，具体门店走城市内检索；place/v1/suggestion 在本 AK 上不可用"
   ]
 }

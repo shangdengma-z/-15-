@@ -43,6 +43,23 @@
         <button class="fold" @click="consoleOpen = false" title="隐藏左栏，地图加宽">隐藏选点 ⟩</button>
       </div>
       <section>
+        <div class="eyebrow">搜索地点</div>
+        <input v-model="searchQ" placeholder="省 / 市 / 县或县级市 / 乡镇 / 门店名"
+               @input="onSearchInput" @keyup.enter="doSearch" />
+        <ul v-if="searchOpen" class="hits">
+          <li v-for="(h, i) in searchHits" :key="i">
+            <button @click="useHit(h)">
+              <b>{{ h.name }}</b>
+              <span>{{ [h.city, h.district, h.address].filter(Boolean).join(' · ') || '无详细地址' }}</span>
+              <em :class="h.kind">{{ h.kind === 'region' ? `${h.level} · 区划中心` : '精确点位' }}</em>
+            </button>
+          </li>
+        </ul>
+        <p v-else-if="searching" class="tip">搜索中…</p>
+        <p v-else-if="searchMiss" class="tip">没搜到匹配的区划或地点：换个更完整的名字，或直接看图选点。</p>
+      </section>
+
+      <section>
         <div class="eyebrow">选择社区</div>
         <div class="presets">
           <button v-for="p in presets" :key="p.id" class="preset" :class="{ on: isActive(p) }" @click="usePreset(p)">
@@ -266,18 +283,74 @@ function usePreset(p) {
   center.value = [p.lat, p.lng]
   lat.value = p.lat
   lng.value = p.lng
+  pickedLabel.value = ''
+  pickedArchetype.value = ''
 }
 function onPick(c) {
   center.value = c
   lat.value = c[0]
   lng.value = c[1]
   activePreset.value = ''
+  pickedLabel.value = ''      // 手动选点没有名字，别把上一次搜索的地名带进报告
+  pickedArchetype.value = ''
 }
 function setCenterFromInput() {
   center.value = [lat.value, lng.value]
   activePreset.value = ''
+  pickedLabel.value = ''
+  pickedArchetype.value = ''
 }
 function setFocus(f) { focus.value = { ...f, t: Date.now() } }
+
+// ---- 搜索定位：区划（到县与县级市）也能落到具体门店 ----
+const searchQ = ref('')
+const searchHits = ref([])
+const searchOpen = ref(false)
+const searching = ref(false)
+const searchMiss = ref(false)
+// 搜索结果带来的名字要跟着体检请求走，否则报告里只剩一串坐标
+const pickedLabel = ref('')
+const pickedArchetype = ref('')
+let searchTimer = null
+
+function onSearchInput() {
+  clearTimeout(searchTimer)
+  if (searchQ.value.trim().length < 2) {
+    searchHits.value = []; searchOpen.value = false; searchMiss.value = false; return
+  }
+  searchTimer = setTimeout(doSearch, 350)   // 防抖：中文输入法逐字上屏时不要每个字烧一次配额
+}
+
+async function doSearch() {
+  const q = searchQ.value.trim()
+  if (q.length < 2) return
+  searching.value = true
+  searchMiss.value = false
+  try {
+    const res = await fetch(`${API}/api/search?q=${encodeURIComponent(q)}`)
+    const d = await res.json().catch(() => ({}))
+    if (!res.ok) { error.value = await errorMessage(res); searchHits.value = []; searchOpen.value = false; return }
+    searchHits.value = d.results || []
+    searchOpen.value = searchHits.value.length > 0
+    searchMiss.value = !searchOpen.value
+  } catch (e) {
+    error.value = '搜索失败：' + e.message
+  } finally {
+    searching.value = false
+  }
+}
+
+function useHit(h) {
+  center.value = [h.lat, h.lng]
+  lat.value = h.lat
+  lng.value = h.lng
+  activePreset.value = ''
+  pickedLabel.value = h.name
+  pickedArchetype.value = h.kind === 'region'
+    ? `区划搜索（${h.level}，取区划中心点）`
+    : `地点搜索（${[h.city, h.district].filter(Boolean).join('') || 'POI'}）`
+  searchOpen.value = false
+}
 
 // 智能体产出的体检结果写进报告视图，但不把用户从对话框里拽走
 function onAgentResult(res) {
@@ -379,7 +452,7 @@ async function run() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         lat: center.value[0], lng: center.value[1],
-        label: p?.name || '', archetype: p?.archetype || ''
+        label: p?.name || pickedLabel.value, archetype: p?.archetype || pickedArchetype.value
       })
     })
     // 提交失败要说人话：429 是当日额度用尽，400 是没配 AK，不能让它掉进"任务超时"
@@ -494,6 +567,22 @@ async function poll(jobId) {
 .console .eyebrow { margin-bottom: 9px; }
 
 .presets { display: flex; flex-direction: column; gap: 6px; margin-bottom: 13px; }
+/* 搜索结果：名称 + 归属 + 精度标签，标签把"区划中心"和"精确点位"分开 */
+.hits { list-style: none; display: flex; flex-direction: column; gap: 5px; margin-top: 9px; }
+.hits button {
+  position: relative; width: 100%; text-align: left; cursor: pointer;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  padding: 8px 76px 8px 10px; border-radius: 8px; box-shadow: none;
+  background: var(--surface-2); border: 1px solid var(--line); transition: border-color .15s;
+}
+.hits button:hover { border-color: var(--accent); }
+.hits b { font-size: 12px; color: var(--ink); font-weight: 600; }
+.hits span { font-size: 9.5px; color: var(--dim); max-width: 100%; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.hits em { position: absolute; right: 9px; top: 50%; transform: translateY(-50%);
+  font-style: normal; font-size: 9px; padding: 2px 6px; border-radius: 5px;
+  background: var(--surface); border: 1px solid var(--line-2); color: var(--muted); }
+.hits em.poi { color: var(--good); border-color: #bcd6c6; background: #eef6f0; }
 .preset {
   position: relative; width: 100%; text-align: left; cursor: pointer;
   display: flex; flex-direction: column; align-items: flex-start; gap: 1px;

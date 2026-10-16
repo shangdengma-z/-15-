@@ -10,7 +10,7 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -522,6 +522,23 @@ async def get_analysis(request: Request, job_id: str):
         return {"status": "error", "error": job.get("error"), "degraded": job.get("degraded", False),
                 "quota_exhausted": job.get("quota_exhausted", False)}
     return {"status": "done", "run_id": job.get("run_id"), "result": job["result"]}
+
+
+@app.get("/api/search")
+async def search_places(q: str = Query(..., min_length=2, max_length=40),
+                        city: str = Query("", max_length=30)):
+    """地名搜索：省 / 市 / 区县与县级市 / 乡镇 / 村，以及具体门店都能命中并给出 BD09LL 坐标。
+
+    组合地理编码与城市内检索两条上游（各自独立配额池，都不占路线规划的 1 万次/天），
+    结果里用 `kind` 与 `precise` 说清"这是区划中心还是精确点位"——区划中心当体检原点是
+    合理的，但报告口径里必须让人知道它不是某个具体门口。
+    """
+    if not scope.mock_mode(settings.mock) and not scope.cred("ak", settings.server_ak):
+        raise HTTPException(400, "未配置百度服务端 AK，无法搜索")
+    results = await client.suggest(q, city)
+    return {"query": q, "count": len(results), "results": results,
+            "meta": {"api_calls": client.calls, "cache_hits": client.cache_hits,
+                     "by_service": dict(client.by_service)}}
 
 
 @app.get("/api/preview")

@@ -74,7 +74,10 @@ def is_protected(path: str, method: str) -> bool:
     POST /api/config **不在**放行名单里：它会改账户下的密钥去向，必须登录且过 CSRF。
     /api/auth/profile 也不放行——它是"已登录状态下的写操作"，同样要过 CSRF。
     """
-    if method == "GET" or not settings.auth_enabled:
+    if method == "GET":
+        # /api/search 是"读接口但会出网"：不锁就等于让爬虫替访客烧部署者的地理编码配额
+        return settings.auth_enabled and path.startswith("/api/search")
+    if not settings.auth_enabled:
         return False
     if path.startswith("/api/auth/profile"):
         return True
