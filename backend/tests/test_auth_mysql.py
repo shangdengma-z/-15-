@@ -75,14 +75,16 @@ def main() -> int:
     AUTH.close_session(signed)
     check("登出后会话立即失效", AUTH.resolve_session(signed) is None)
 
-    left0 = AUTH.budget_left(uid)
     AUTH.consume_analysis(uid)
-    check("每日预算按次扣减", AUTH.budget_left(uid) == left0 - 1, f"{left0} -> {AUTH.budget_left(uid)}")
+    with AUTH.connect() as _c, _c.cursor() as _cur:
+        _cur.execute("SELECT analyses FROM quotas WHERE user_id=%s AND day=%s",
+                     (uid, AUTH._now().date().isoformat()))
+        _row = _cur.fetchone()
+    check("当日用量记入台账", int(_row["analyses"]) >= 1, str(_row))
 
     before = AUTH.healthcheck()
     check("healthcheck 能数到用户", before["ok"] and before["users"] >= 1, str(before))
 
-    blob = AUTH.encrypt_secret("AKEXAMPLE1234567890abcd")
     AUTH.save_user_secrets(uid, ak="AKEXAMPLE1234567890abcd", store=True)
     with conn.cursor() as cur:
         cur.execute("SELECT bmap_ak_enc FROM users WHERE id=%s", (uid,))

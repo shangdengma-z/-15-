@@ -18,7 +18,7 @@ os.environ.update(
     BMAP_CACHE_DIR=f"data/cache_acctest_{TAG}",
     BMAP_DB_PATH=f"data/db_acctest_{TAG}/lifestyle.db",
     SECRET_KEY="sqlite-selftest-secret-key", MASTER_KEY="sqlite-selftest-master-key",
-    DAILY_ANALYSIS_BUDGET="3", MAX_REG_PER_IP_DAY="5",
+    MAX_REG_PER_IP_DAY="5",
 )
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -80,13 +80,19 @@ def main() -> int:
     auth.close_session(signed)
     check("登出后会话立即失效", auth.resolve_session(signed) is None)
 
-    # 3) 额度：按提交扣，天然是 per-user
-    left0 = auth.budget_left(uid)
+    # 3) 用量台账：只记账、不拦请求（每人每日上限已去掉），天然是 per-user
+    def quota(user_id, col):
+        with auth.connect() as c, c.cursor() as cur:
+            cur.execute(f"SELECT {col} AS v FROM quotas WHERE user_id=%s AND day=%s",
+                        (user_id, auth._now().date().isoformat()))
+            row = cur.fetchone()
+        return int(row["v"]) if row and row["v"] else 0
+
     auth.consume_analysis(uid)
-    check("额度按次扣减", auth.budget_left(uid) == left0 - 1, f"{left0} -> {auth.budget_left(uid)}")
+    check("提交记入台账", quota(uid, "analyses") == 1, str(quota(uid, "analyses")))
     auth.consume_agent(uid)
-    check("智能体次数单独计", auth.budget_left(uid) == left0 - 1)
-    check("额度耗尽判定", auth.budget_left(uid) > 0 and settings.daily_analysis_budget == 3)
+    check("智能体次数单独记", quota(uid, "agent_turns") == 1 and quota(uid, "analyses") == 1)
+    check("每日上限这项配置已彻底去掉", not hasattr(settings, "daily_analysis_budget"))
 
     # 4) 限速窗口
     check("首次放行", auth._allow("reg", "10.9.9.9", 2, 86400) is True)

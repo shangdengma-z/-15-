@@ -10,7 +10,7 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -103,11 +103,6 @@ async def auth_gate(request: Request, call_next):
         scope.set_creds(ak=creds.get("bmap_ak", ""), sk=creds.get("bmap_sk", ""),
                         llm_key=creds.get("llm_key", ""), llm_base=creds.get("llm_base_url", ""),
                         llm_model=creds.get("llm_model", ""))
-        # 额度只管"会烧配重的写接口"。用一句 budget<=0 拦住全部写操作是错的：
-        # 那样当天跑满的人连"保存自己的 AK""取消公开分享"都点不动，只能干等明天。
-        heavy = request.method != "GET" and request.url.path.startswith(("/api/analysis", "/api/agent"))
-        if heavy and auth.budget_left(principal.id) <= 0:
-            return JSONResponse(status_code=429, content={"detail": "今日分析额度已用完，明天再来或缩短演示"})
     # 请求头里的 key 优先于账户里保存的：默认密钥只待在浏览器
     h = request.headers
     if h.get("x-bmap-ak") or h.get("x-llm-key") or h.get("x-demo-mode"):
@@ -223,8 +218,7 @@ def _user_config_view(request: Request, stored: bool | None = None,
             "qps": settings.qps, "concurrency": settings.concurrency, "qps_source": "env",
             "quota_exhausted": client.quota_exhausted,
             "account": None if p is None else {"id": p.id, "email": p.email,
-                                               "nickname": p.nickname, "store_keys": p.store_keys,
-                                               "budget_left": auth.budget_left(p.id)},
+                                               "nickname": p.nickname, "store_keys": p.store_keys},
             "bmap": {"ak_masked": _mask(ak), "ak_source": src(ak, bool(settings.server_ak)),
                      "sk_set": bool(c.get("sk")) or bool(settings.server_sk),
                      "sk_source": src(c.get("sk") or "", bool(settings.server_sk))},
@@ -481,7 +475,8 @@ async def agent_trace(request: Request, agent_id: str):
 async def start_analysis(request: Request, req: AnalysisRequest):
     job_id = uuid.uuid4().hex[:12]
     uid = getattr(request.state, "uid", None)
-    if uid is not None:                     # 预算按提交计：等完成再扣的话，并发几个请求就能绕过
+    # quotas 只是当日用量台账（部署者查"今天谁在烧我那份共享 AK"用），不是上限、不拦请求
+    if uid is not None:
         await asyncio.to_thread(auth.consume_analysis, uid)
     JOBS[job_id] = {"status": "queued", "started": time.time(), "owner": uid}
 

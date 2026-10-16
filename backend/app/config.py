@@ -58,9 +58,8 @@ class Settings:
     # 服务端会话的有效期（sessions.expires_at）。浏览器侧的 cookie 是**会话级**的：
     # 关掉浏览器就要重新登录，这个值只决定"没关浏览器时多久要重新登录一次"与吊销窗口
     session_days: int = field(default_factory=lambda: int(_env("SESSION_DAYS", "14")))
-    # 开放注册的护栏：每 IP 每日注册数、每人每日分析次数、全局并发任务数
+    # 开放注册的护栏：每 IP 每日注册数、全局并发任务数（每人每日次数上限已去掉，见 auth.quotas）
     max_reg_per_ip_day: int = field(default_factory=lambda: int(_env("MAX_REG_PER_IP_DAY", "5")))
-    daily_analysis_budget: int = field(default_factory=lambda: int(_env("DAILY_ANALYSIS_BUDGET", "30")))
     job_slots: int = field(default_factory=lambda: int(_env("JOB_SLOTS", "4")))
 
 
@@ -68,7 +67,8 @@ settings = Settings()
 
 # 民生设施类别 -> 百度 POI 检索关键词（tag 语义清洗在 poi.py 里做二次过滤）
 CATEGORIES = {
-    "medical": {"name": "基础医疗", "queries": ["药店", "社区卫生服务中心", "诊所"], "keywords_any": ["药店", "药房", "诊所", "卫生服务", "卫生室", "门诊"]},
+    "medical": {"name": "基础医疗", "queries": ["药店", "社区卫生服务中心", "诊所"],
+                "keywords_any": ["药店", "药房", "诊所", "卫生服务", "卫生室", "门诊"]},
     "education": {"name": "教育", "queries": ["小学", "幼儿园"], "keywords_any": ["小学", "幼儿园"]},
     "shopping": {"name": "购物", "queries": ["菜市场", "超市", "便利店"], "keywords_any": ["菜市场", "菜场", "农贸", "超市", "便利"]},
     "elderly": {"name": "养老", "queries": ["养老院", "社区养老", "日间照料"], "keywords_any": ["养老", "照料中心", "老年"]},

@@ -219,7 +219,7 @@ npm run dev
 | 账号与会话 | 账号库 MySQL 8（公网多用户）或 SQLite（单机带门禁，与档案同文件）：`users/sessions/quotas/rate_log` 四张表两边同构；口令 argon2id 加盐哈希，会话 cookie 只存 token 的 SHA-256，签名走 `SECRET_KEY` |
 | 数据隔离 | 缓存目录与档案 `scene_key` 都按 `u<用户id>` 分片：同社区两人各存一份，互相读不到（读别人的 id 一律 404，不区分"不存在"与"越权"） |
 | 密钥去向 | **默认只存用户自己浏览器的 localStorage**，随请求头 `X-Bmap-AK`/`X-Llm-Key` 带上、服务端不留副本；用户主动勾"加密保存到本账户"才用 `MASTER_KEY` Fernet 加密入库，取消勾选即刻删除 |
-| 额度与限速 | 每人每日 `DAILY_ANALYSIS_BUDGET` 次体检（提交即扣，防并发绕过）、每 IP 每日注册数、登录尝试 10 分钟窗口；全局 `JOB_SLOTS` 并发闸 |
+| 限速与用量 | 每人每日次数上限**已去掉**（自带 AK 的人不该被部署者的数字管着，而它又挡不住真烧的人）；留下每 IP 每日注册数、登录尝试 10 分钟窗口、全局 `JOB_SLOTS` 并发闸，以及 `quotas` 表的按人按天用量台账（只记账不拦请求） |
 | 写接口 | 一律要求登录 + CSRF 双提交（`Sec-Fetch-Site: same-origin` 亦视为同源）；`POST /api/config` 在多用户下**不允许**改数据模式与限流档位，那是部署级配置 |
 | 演示模式 | 多用户下用请求级 `X-Demo-Mode: 1` 表达，不会把一个账号的开关传染给全站 |
 
@@ -269,7 +269,7 @@ crontab -e   # 40 3 * * * cd /srv/bisai && bash deploy/backup.sh >> /var/log/cir
 `docker-compose.prod.yml` 起 4 个服务（mysql / backend / fe / proxy），只有 nginx 边缘对外听 80/443，
 3306 与 8000 都不发布端口；`deploy/my.cnf` 是按 2C2G 调的（关 `performance_schema` 与 binlog、
 256M buffer pool、40 连接——默认配置的 MySQL 8 光 `performance_schema` 就能吃掉小机器一半内存）；
-`deploy/backup.sh` 每天同时备 MySQL（账号/会话/额度）与 SQLite（档案），留 14 份。
+`deploy/backup.sh` 每天同时备 MySQL（账号/会话/用量台账）与 SQLite（档案），留 14 份。
 
 两条路线共同的纪律：**服务端 AK、大模型 key、`SECRET_KEY`/`MASTER_KEY` 只存在于服务器 `.env`**，
 `.gitignore` 与 `.dockerignore` 都排掉了 `.env` 与 `data/`，镜像里不含任何凭据
@@ -293,7 +293,7 @@ backend/app/        FastAPI 服务
   llm.py              OpenAI 兼容 LLM 客户端（function calling + 缓存 + 重试）
   agent.py            规划智能体：工具定义、受限编排循环、规则模式降级
   main.py             HTTP API（异步任务 + 轮询 + 历史/对比/导出/统计 + 计量响应头）
-  auth.py             多用户底座：MySQL 四表、argon2id 口令、签名会话、Fernet 密钥保管、限速与每日额度
+  auth.py             多用户底座：MySQL 四表、argon2id 口令、签名会话、Fernet 密钥保管、限速与用量台账
   authapi.py          注册/登录/登出/我是谁 + 守卫中间件用到的判定（失败信息一律模糊）
   scope.py            请求级"当前用户"作用域：缓存子目录与凭据都跟着请求走，不写全局 settings
   baidu_client.py 补充：按服务分桶限流、日配额熔断、POI 检索停止原因登记
@@ -308,7 +308,7 @@ frontend/src/       Vue3 + Vite（四列工作台栅格 + 实色纸面卡片）
   components/AgentPanel.vue   AI 规划助手对话面板（工具轨迹实时展示）
   components/AdvisePanel.vue  选址建议（业态选择、候选排序、口径与出网成本披露）
   components/Archive.vue      历史档案与跨社区 A/B 对比
-  components/SettingsPanel.vue 接入设置（模式一键切换、自填 AK/Key、密钥存放位置、账户与额度、限流档位）
+  components/SettingsPanel.vue 接入设置（模式一键切换、自填 AK/Key、密钥存放位置、限流档位）
 scripts/            demo.ps1 / demo.sh（免密钥一键演示）、prewarm.py（真实数据预热）
 deploy/             上线件：nginx.conf（TLS 边缘）、my.cnf（2C2G 调优）、docker-compose.prod.yml、
                     server-setup.sh（swap/目录/证书）、backup.sh（MySQL+SQLite 每日备份）
@@ -352,7 +352,8 @@ docs/               技术设计文档
 
 | 文件 | 内容 |
 |---|---|
-| `docs/作品介绍文档.md` | 赛题要求的作品介绍：项目背景 / 技术架构 / 应用场景 / 创新点，并逐条对照两套评分维度（含真实数据实测表、已知局限与复现指引），可直接导出 PDF 随邮件提交 |
+| `docs/作品介绍文档.md` | 赛题要求的作品介绍：项目背景 / 技术架构 / 应用场景 / 创新点，并逐条对照两套评分维度（含真实数据实测表、已知局限与复现指引） |
+| `docs/作品介绍文档.docx` | 上面那份的 Word 版（提交用）。改完 Markdown 重跑 `python scripts/md2docx.py docs/作品介绍文档.md docs/作品介绍文档.docx` 即可同步，依赖 `pip install python-docx`（只装开发环境，不进 requirements） |
 | `docs/技术设计文档.md` | 赛题第 3 条要求的全部五节：API 调用策略 / 等时圈算法 / POI 清洗 / 盲区识别 / 真实对比测试报告，另附显式偏离与未验证项清单 |
 | `docs/bench_route_strategy.json` | 批量 vs 逐条的出网基准：24 对路线 = 24 次请求 vs 1 次请求，配额单位相同；20 次请求预算下覆盖率 83% vs 100%（`scripts/bench_route_strategy.py` 生成） |
 | `docs/capability_manifest.json` | 百度开放能力可用/不可用清单与决策依据（含"无公开步行等时圈 API"的核实记录） |
@@ -376,16 +377,16 @@ python backend/tests/test_modules_offline.py
 python backend/tests/test_search_offline.py
 
 # 认证离线自测（不连库、CI 必跑）：argon2id 校验、签名篡改、CSRF 配对、掩码、
-# 限速窗口、额度扣减方向、AUTH_ENABLED=0 时整条链路放行
+# 限速窗口、用量台账记账方向、AUTH_ENABLED=0 时整条链路放行
 python backend/tests/test_auth_offline.py
 
 # 多用户自测：
 #   test_auth_mysql.py     账号生命周期直连真 MySQL（没配 DB_PASSWORD 自动 SKIP）
 #   test_auth_sqlite.py    同一套账号层跑在 SQLite 上（不装 MySQL、零密钥，CI 必跑）：
-#                          建表幂等→注册→重复邮箱→会话解析/篡改/吊销→额度扣减→
+#                          建表幂等→注册→重复邮箱→会话解析/篡改/吊销→用量台账→
 #                          密文往返与"取消即删"→限速→级联清理→无主旧档案认领
 #   test_auth_http.py      HTTP 层隔离，账号库跟随 DB_BACKEND：A/B 互不可见、越权 404、
-#                          公开分享只读、缺 CSRF 403、额度耗尽 429 且不影响他人、
+#                          公开分享只读、缺 CSRF 403、连提必放（无每日上限）且台账按人分记、
 #                          会话 cookie 不带 max-age、密钥"只在浏览器/入库/取消即删"
 python backend/tests/test_auth_mysql.py
 python backend/tests/test_auth_sqlite.py
@@ -394,7 +395,13 @@ python backend/tests/test_auth_http.py
 # 出网策略基准（零真实出网，产出 docs/bench_route_strategy.json）
 python scripts/bench_route_strategy.py
 
-# CI（GitHub Actions）每次 push 自动执行：ruff 检查 + 离线自测（含认证离线套件）+ Mock 冒烟 + 前端构建
+# CI（GitHub Actions，.github/workflows/ci.yml）四个 job 每次 push 自动执行：
+#   style    格式与约定守门（scripts/check_style.py：行尾空白/末尾换行/tab/CRLF 混用/BOM/行宽）
+#   backend  ruff 静态检查 + 8 套自测（零密钥、零出网）+ Mock 冒烟 + 零密钥全链路断言
+#            （断言在 scripts/ci_full_chain.py 里而不是 YAML 里：多行 python -c 顶格会截断
+#             `run: |` 块标量，整个 workflow 变成 Invalid workflow file，这是真实踩过的坑）
+#   frontend npm ci + vite build
+#   image    docker build -f Dockerfile.single 真构建线上那个单镜像，起容器探 /api/health 与首页
 ```
 
 ## License

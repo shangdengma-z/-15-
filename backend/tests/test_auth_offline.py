@@ -15,8 +15,6 @@ os.environ.update(
 )
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from cryptography.fernet import InvalidToken  # noqa: E402
-
 from app import auth as AUTH  # noqa: E402
 from app.config import settings  # noqa: E402
 

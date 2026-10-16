@@ -21,7 +21,6 @@ os.environ["BMAP_DB_PATH"] = "data/db_selftest/modules.db"
 os.environ["LLM_API_KEY"] = ""
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import advisor
 from app.advisor import advise, filter_residential
 from app.analysis import cluster_blindspots
 from app.baidu_client import client, straight_line_m

@@ -48,7 +48,9 @@ CREATE INDEX IF NOT EXISTS idx_runs_user ON runs(user_id);
 POI_KEEP = 40   # 每类最多留 40 个设施要点：够地图回放渲染，又不至于把库撑大
 ANSWER_KEEP = 4000
 
-NOW = lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+def _now() -> str:
+    """DATETIME 列统一按这个文本格式写，SQLite 与 MySQL 两边同构、可直接比较。"""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def scene_key(center: tuple, mode: str, user_id: int | None = None) -> str:
@@ -97,7 +99,7 @@ def save_run(result: dict, label: str = "", archetype: str = "", user_id: int | 
     # 降级是数据质量标记（单独成列），不该把同一个社区裂成两条 scene_key 档案
     mode = "mock" if meta.get("mock") else "real"
     run_id = scene_key((center.get("lat", 0), center.get("lng", 0)), mode, user_id)
-    now = NOW()
+    now = _now()
     with closing(_open()) as c, c:
         prev = c.execute("SELECT created_at, run_count FROM runs WHERE id=?", (run_id,)).fetchone()
         c.execute(
@@ -125,7 +127,7 @@ def save_run(result: dict, label: str = "", archetype: str = "", user_id: int | 
 def save_agent_run(out: dict, question: str, center: tuple | None = None, user_id: int | None = None) -> str:
     """存一次智能体问答，并把工具调用轨迹落进 traces（决策可回放，不是黑箱）。"""
     aid = new_id()
-    now = NOW()
+    now = _now()
     llm_mode = out.get("mode") == "llm"
     with closing(_open()) as c, c:
         c.execute(
@@ -224,7 +226,7 @@ def compare(run_ids: list, user_id: int | None = None, enforce: bool = False) ->
         for rid in run_ids:
             row = c.execute("SELECT id,label,archetype,mode,score,lat,lng,updated_at,user_id,public "
                             "FROM runs WHERE id=?", (rid,)).fetchone()
-            if row and enforce and (user_id is None or row["user_id"] != user_id)                     and not row["public"]:
+            if row and enforce and not row["public"] and (user_id is None or row["user_id"] != user_id):
                 continue
             if not row:
                 continue
@@ -325,7 +327,7 @@ def _slim(result: dict) -> dict:
     """保留可回放渲染的派生数据；设施明细截断，原始响应从不入库。"""
     r = dict(result)
     r["pois"] = {k: v[:POI_KEEP] for k, v in (result.get("pois") or {}).items()}
-    r["saved_at"] = NOW()
+    r["saved_at"] = _now()
     return r
 
 

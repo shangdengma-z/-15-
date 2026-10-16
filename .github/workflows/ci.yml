@@ -6,6 +6,18 @@ on:
   pull_request:
 
 jobs:
+  style:
+    # 格式守门放在最前面：它只要 python 标准库，几秒钟出结果，
+    # 而 ruff format / prettier 那种"重排整个文件"的格式化会洗掉 blame，所以不跑那种。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Style & convention check
+        run: python scripts/check_style.py
+
   backend:
     runs-on: ubuntu-latest
     steps:
@@ -18,7 +30,7 @@ jobs:
       - name: Lint (ruff)
         run: |
           pip install ruff
-          ruff check backend/app --select E,F,W --ignore E501
+          ruff check backend/app backend/tests scripts --select E,F,W --ignore E501,E402
       - name: Agent offline self-test (mock map + fake LLM)
         run: python backend/tests/test_agent_offline.py
       - name: Standards & site-advisor offline self-test (mock map)
@@ -50,40 +62,12 @@ jobs:
           BMAP_MOCK: '1'
           BMAP_QPS: '1000'
         run: |
-          timeout 30 uvicorn app.main:app --app-dir backend --port 8001 &
-          sleep 3
-          JOB=$(curl -sf -X POST http://localhost:8001/api/analysis -H 'Content-Type: application/json' \
-                -d '{"lat":40.0703,"lng":116.3306}' | python -c 'import sys,json;print(json.load(sys.stdin)["job_id"])')
-          for i in $(seq 1 20); do
-            sleep 2
-            curl -sf http://localhost:8001/api/analysis/$JOB | python -c '
-import sys, json
-d = json.load(sys.stdin)
-if d["status"] != "done":
-    sys.exit(1)
-r = d["result"]
-assert len(r["rings"]["15"]) >= 12, "等时圈顶点不足"
-assert r["coverage"] and all(v["total"] >= 0 for v in r["coverage"].values()), "覆盖统计缺失"
-assert "missing" in json.dumps(r["blindspots"], ensure_ascii=False) or r["blindspots"] == [], "盲区字段异常"
-cl = r["blindspot_clusters"]
-assert sum(c["cells"] for c in cl) == len(r["blindspots"]), "片区聚合丢格/重计"
-assert all(c["cells"] >= 1 and c["area_km2"] > 0 and "missing" in c for c in cl), "片区字段不完整"
-assert len(r["meta"]["evidence_id"]) == 16, "证据指纹缺失"
-sc = r["scenarios"]["by_crowd"]
-assert sc["elderly"]["area_km2"] < sc["adult"]["area_km2"], "人群步速换算方向错误"
-assert r["scenarios"]["api_calls_for_scenarios"] == 0, "情景重算不应出网"
-assert r["metrics"] and all("formula" in m for m in r["metrics"]), "可解释指标缺公式"
-std = r["standards"]
-assert std["total"] >= 5 and std["method"], "导则达标对照缺失"
-assert all(i["ref_m"] > 0 and i["status"] in ("达标", "临界", "缺口", "无点位") for i in std["items"]), "导则状态取值异常"
-assert std["passed"] == sum(1 for i in std["items"] if i["status"] == "达标"), "达标计数不自洽"
-print("零密钥全链路 OK：健康分", r["health_score"], "| 盲区", len(r["blindspots"]),
-      "处 | 导则达标", std["passed"], "/", std["total"],
-      "项 | 等时圈顶点", len(r["rings"]["15"]), "| 热力点", len(r["heat"]),
-      "| 老人/成人面积", sc["elderly"]["area_km2"], "/", sc["adult"]["area_km2"])
-' && exit 0
-          done
-          echo "全链路体检未在 40s 内完成" && exit 1
+          uvicorn app.main:app --app-dir backend --port 8001 &
+          SERVER=$!
+          sleep 4
+          python scripts/ci_full_chain.py http://127.0.0.1:8001; RC=$?
+          kill $SERVER
+          exit $RC
 
   frontend:
     runs-on: ubuntu-latest
@@ -97,3 +81,23 @@ print("零密钥全链路 OK：健康分", r["health_score"], "| 盲区", len(r[
           cd frontend
           npm install
           npm run build
+
+  image:
+    # 线上跑的就是 Dockerfile.single 这一个镜像：CI 里真构建 + 真起容器，
+    # "能部署"就不只是我本机的一次运气。刻意不 push——镜像仓库是私有的，CI 无凭据也不该有。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build single image
+        run: docker build -f Dockerfile.single -t circle15:ci .
+      - name: Run and probe it
+        run: |
+          docker run -d --name ci-app -p 8090:8000 -e BMAP_MOCK=1 -e BMAP_QPS=1000 circle15:ci
+          for i in $(seq 1 15); do
+            sleep 2
+            curl -sf http://localhost:8090/api/health | grep '"ok":true' && break
+          done
+          curl -sf http://localhost:8090/api/health | grep '"ok":true'
+          # 静态站与 API 同一个进程：首页拿得到，且带上了运行时注入密钥的那段脚本
+          curl -sf http://localhost:8090/ | grep -q 'src="/env.js"'
+          docker logs ci-app | tail -5

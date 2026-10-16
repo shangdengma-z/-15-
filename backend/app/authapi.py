@@ -135,12 +135,9 @@ def logout(request: Request, response: Response):
 @router.get("/me")
 def me(request: Request):
     if not settings.auth_enabled:
-        return {"auth_enabled": False, "user": None, "budget_left": None, "budget_total": None}
+        return {"auth_enabled": False, "user": None}
     p = principal(request)
-    return {"auth_enabled": True, "user": None if p is None else p.public(),
-            "budget_left": None if p is None else auth.budget_left(p.id),
-            # 前端画额度条要用总数，别让页面自己去猜当天的上限是多少
-            "budget_total": settings.daily_analysis_budget}
+    return {"auth_enabled": True, "user": None if p is None else p.public()}
 
 
 class Nickname(BaseModel):

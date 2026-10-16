@@ -13,8 +13,6 @@
       <span class="pill" :class="mockMode ? 'warn' : 'ok'"><i></i>{{ mockMode ? '演示合成路网' : '真实路网' }}</span>
       <span v-if="quotaOut" class="pill bad"><i></i>今日路线规划配额已用完</span>
       <span v-if="stats.communities" class="pill">{{ stats.communities }} 个社区已建档</span>
-      <span v-if="budgetLeft !== null" class="pill" :class="{ bad: budgetLeft <= 0 }">今日还可测
-        <b class="num">{{ budgetLeft }}</b> 次</span>
       <span v-if="account" class="pill cur">{{ account.nickname || account.email }}</span>
       <span v-if="result" class="pill cur">{{ resultLabel }} · <b class="num">{{ result.health_score }}</b> 分</span>
       <button v-if="runId" class="btn ghost" :class="{ done: linkCopied }" @click="copyLink"
@@ -113,9 +111,8 @@
         <Archive v-if="tab === 'archive'" :history="history" :stats="stats" :compare="compareIds"
                  :comparison="comparison" @load="loadRun" @remove="removeRun" @toggle="toggleCompare" />
         <SettingsPanel v-if="tab === 'settings'" @changed="onConfigChanged" @signed-out="onSignedOut" />
-        <AccountPanel v-if="tab === 'account'" :account="account" :budget-left="budgetLeft"
-                      :budget-total="budgetTotal" :stats="stats" @renamed="onRenamed"
-                      @signed-out="onSignedOut" @goto="switchTab" />
+        <AccountPanel v-if="tab === 'account'" :account="account" :stats="stats"
+                      @renamed="onRenamed" @signed-out="onSignedOut" @goto="switchTab" />
       </div>
     </section>
   </div>
@@ -155,7 +152,7 @@ const VIEWS = {
   agent: ['AI 规划助手', '大模型自主编排地图工具，结论直接回标到图上'],
   archive: ['历史档案', '本机 SQLite 记录，点一条即可 0 配额回放'],
   settings: ['接入设置', '填入你自己的百度 AK 与大模型 Key，并选择它们存在哪里'],
-  account: ['个人中心', '账号、当日额度、密钥去向与退出登录']
+  account: ['个人中心', '账号、密钥去向与退出登录']
 }
 
 const lat = ref('')
@@ -184,8 +181,6 @@ const runId = ref('')
 const linkCopied = ref(false)
 const authOn = ref(false)
 const account = ref(null)
-const budgetLeft = ref(null)
-const budgetTotal = ref(null)
 
 // 单机模式（后端 AUTH_ENABLED=0）authOn 恒为 false，这一关直接放行，交付路径与录屏不受影响
 const gate = computed(() => authOn.value && !account.value)
@@ -200,8 +195,6 @@ onMounted(async () => {
   const who = await me()
   authOn.value = !!who.auth_enabled
   account.value = who.user || null       // 必须先赋值再算 gate：反了就会把已登录的人挡在登录页
-  budgetLeft.value = who.budget_left ?? null
-  budgetTotal.value = who.budget_total ?? null
   if (gate.value) return          // 停在登录视图：没登录就不发业务请求，省得满屏 401
   await boot()
 })
@@ -229,12 +222,10 @@ async function onLogin(user) {
   await boot()
 }
 
-/** me() 是会话与额度的唯一来源：登录、跑完一次体检、改名后都重新取一次 */
+/** me() 是会话的唯一来源：登录、跑完一次体检、改名后都重新取一次 */
 async function refreshSession() {
   const who = await me()
   if (who.user) account.value = who.user
-  budgetLeft.value = who.budget_left ?? null
-  budgetTotal.value = who.budget_total ?? null
 }
 
 function onRenamed(nickname) {
@@ -243,8 +234,6 @@ function onRenamed(nickname) {
 
 function onSignedOut() {
   account.value = null
-  budgetLeft.value = null
-  budgetTotal.value = null
   result.value = null
   history.value = []
   stats.value = {}
@@ -364,7 +353,6 @@ function onAgentPick(c) { onPick(c) }
 async function onConfigChanged(data) {
   mockMode.value = !!data.mock
   quotaOut.value = !!data.quota_exhausted
-  if (data.account) budgetLeft.value = data.account.budget_left ?? budgetLeft.value
   if (data.mock) result.value = null
   await refreshLists()
 }
@@ -455,7 +443,7 @@ async function run() {
         label: p?.name || pickedLabel.value, archetype: p?.archetype || pickedArchetype.value
       })
     })
-    // 提交失败要说人话：429 是当日额度用尽，400 是没配 AK，不能让它掉进"任务超时"
+    // 提交失败要说人话：429 是限速窗口，400 是没配 AK，不能让它掉进"任务超时"
     const fail = await errorMessage(res)
     if (fail) { error.value = fail; return }
     const { job_id: jobId } = await res.json()

@@ -9,7 +9,6 @@
 
 import os
 import sys
-import time
 import uuid
 from pathlib import Path
 
@@ -17,7 +16,7 @@ TAG = uuid.uuid4().hex[:8]
 os.environ.update(
     AUTH_ENABLED="1", BMAP_MOCK="1", BMAP_QPS="500", BMAP_CONCURRENCY="8",
     BMAP_CACHE_DIR=f"data/cache_httptest_{TAG}", BMAP_DB_PATH=f"data/db_httptest_{TAG}/lifestyle.db",
-    LLM_API_KEY="", DAILY_ANALYSIS_BUDGET="2", MAX_REG_PER_IP_DAY="50",
+    LLM_API_KEY="", MAX_REG_PER_IP_DAY="50",
     # 清掉部署级密钥：不装 .env 的机器（CI）与装了 .env 的机器要跑出同一套断言，
     # 否则"来自 .env"这类来源标注在一边通过、在另一边失败
     BMAP_SERVER_AK="", BMAP_SERVER_SK="",
@@ -63,6 +62,17 @@ def raw_column(user_id, col):
         return (cur.fetchone() or {}).get("v") or ""
 
 
+
+
+def quota_col(user_id, col):
+    """读 quotas 的当日用量台账。上限已去掉，这张表只剩"今天谁提交了几次"这一个用途。"""
+    with auth.connect() as c, c.cursor() as cur:
+        cur.execute(f"SELECT {col} AS v FROM quotas WHERE user_id=%s AND day=%s",
+                    (user_id, auth._now().date().isoformat()))
+        row = cur.fetchone()
+    return int(row["v"]) if row and row["v"] else 0
+
+
 def main() -> int:
     need = [settings.secret_key, settings.master_key]
     if settings.db_backend == "mysql":
@@ -91,7 +101,7 @@ def main() -> int:
         # 注册当次就是登录：个人中心里"最近登录"不该是空的
         check("注册即登录，last_login 已记录", bool(me["user"]["last_login_at"]),
               str(me["user"]["created_at"]))
-        check("me 报剩余预算", me["budget_left"] == settings.daily_analysis_budget, str(me["budget_left"]))
+        check("me 不再对外报额度", "budget_left" not in me and "budget_total" not in me)
 
         with TestClient(app) as b:
             register(b, f"b.{TAG}@example.test")
@@ -130,23 +140,24 @@ def main() -> int:
             no_csrf = anon.post("/api/runs/%s/public" % id_a, json={"public": False})
             check("缺 CSRF 头的写操作被拒", no_csrf.status_code == 403, str(no_csrf.status_code))
 
-            # 5) 每日预算
-            for _ in range(settings.daily_analysis_budget):
+            # 5) 每日上限已去掉：连提必放，quotas 只当用量台账
+            uid_b = auth.get_user_by_email(f"b.{TAG}@example.test")["id"]
+            for k in range(3):
                 r = anon.post("/api/analysis", json={"lat": 40.07, "lng": 116.33},
                               headers={"X-CSRF-Token": csrf_of(anon)})
-                check("预算内提交成功 200", r.status_code == 200, str(r.status_code))
-            over = anon.post("/api/analysis", json={"lat": 40.08, "lng": 116.34},
-                             headers={"X-CSRF-Token": csrf_of(anon)})
-            check("超出每日预算被拒 429", over.status_code == 429, str(over.status_code))
-            check("B 的预算不受 A 影响",
-                  b.get("/api/auth/me").json()["budget_left"] == settings.daily_analysis_budget)
+                check(f"第 {k + 1} 次提交仍 200（没有每日上限）", r.status_code == 200, str(r.status_code))
+            own = anon.post("/api/analysis", json={"lat": 40.08, "lng": 116.34},
+                            headers={"X-CSRF-Token": csrf_of(anon), "X-Bmap-AK": "AKOWNBYPASS123"})
+            check("自带 AK 的提交同样放行", own.status_code == 200, str(own.status_code))
+            check("台账按提交累加", quota_col(uid_a, "analyses") == 4, str(quota_col(uid_a, "analyses")))
+            check("台账也是 per-user，B 不受 A 影响", quota_col(uid_b, "analyses") == 0)
 
             # 6) 密钥去向：默认只在浏览器里，勾选才加密入库（verify=false 免发真实探测）
             g = anon.get("/api/config", headers={"X-Bmap-AK": "AKBROWSERONLY1234"})
             body = g.text
             cfg = g.json()
-            check("配置视图是账户作用域且带余额",
-                  cfg.get("scope") == "user" and cfg["account"]["budget_left"] is not None, str(cfg.get("scope")))
+            check("配置视图是账户作用域",
+                  cfg.get("scope") == "user" and cfg["account"] is not None, str(cfg.get("scope")))
             check("浏览器带进来的 AK 只标来源、不回明文",
                   cfg["bmap"]["ak_source"] == "browser" and "AKBROWSERONLY1234" not in body,
                   cfg["bmap"]["ak_masked"])
@@ -205,10 +216,7 @@ def main() -> int:
             check("改名生效并回显", prof.status_code == 200
                   and prof.json()["nickname"] == "改名后的我"
                   and who["user"]["nickname"] == "改名后的我", prof.text[:40])
-            check("me 带注册时间与当日额度上限",
-                  bool(who["user"]["created_at"])
-                  and who["budget_total"] == settings.daily_analysis_budget,
-                  f'{who["user"]["created_at"]} / {who["budget_total"]}')
+            check("me 带注册时间", bool(who["user"]["created_at"]), str(who["user"]["created_at"]))
             check("空昵称被拒", anon.post("/api/auth/profile", json={"nickname": "   "},
                                         headers={"X-CSRF-Token": csrf_of(anon)}).status_code == 422)
             check("改资料缺 CSRF 一样被拒",
@@ -240,7 +248,7 @@ def main() -> int:
         for e in emails:
             cur.execute("DELETE FROM users WHERE email=%s", (e,))
         cur.execute("DELETE FROM rate_log WHERE bucket IN ('reg', 'login') "
-                    "AND window_key LIKE %s", (f"%10.0.0.1%",))
+                    "AND window_key LIKE %s", ("%10.0.0.1%",))
     import shutil
     for d in (f"data/cache_httptest_{TAG}", f"data/db_httptest_{TAG}"):
         shutil.rmtree(Path(d), ignore_errors=True)

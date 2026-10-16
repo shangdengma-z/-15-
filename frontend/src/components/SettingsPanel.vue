@@ -7,10 +7,6 @@
           <b>{{ cfg.account?.nickname || cfg.account?.email }}</b>
           <span>{{ cfg.account?.email }}</span>
         </div>
-        <div class="a-num">
-          <em class="num">{{ cfg.account?.budget_left ?? '-' }}</em>
-          <span>今日剩余体检次数</span>
-        </div>
       </div>
       <div class="acts">
         <button class="btn ghost" @click="signOut">退出登录</button>
@@ -352,9 +348,6 @@ label { font-size: 10.5px; color: var(--muted); display: flex; align-items: cent
 .a-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .a-main b { font-size: 12.5px; color: var(--ink); }
 .a-main span { font-size: 10px; color: var(--dim); word-break: break-all; }
-.a-num { text-align: right; display: flex; flex-direction: column; gap: 1px; }
-.a-num em { font-style: normal; font-size: 19px; font-weight: 700; color: var(--accent); }
-.a-num span { font-size: 9.5px; color: var(--dim); }
 .btn.ghost.bad { color: var(--bad); border-color: #e0c2c4; }
 .btn.ghost.bad:hover:not(:disabled) { border-color: var(--bad); color: var(--bad); background: #f9efef; }
 

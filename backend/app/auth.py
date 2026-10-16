@@ -475,14 +475,10 @@ def allow_login(ip: str) -> bool:
     return _allow("login", ip or "na", 20, 600)
 
 
-def budget_left(user_id: int) -> int:
-    with connect() as c, c.cursor() as cur:
-        cur.execute("SELECT analyses FROM quotas WHERE user_id=%s AND day=%s",
-                    (user_id, _now().date().isoformat()))
-        row = cur.fetchone()
-    return settings.daily_analysis_budget - int(row["analyses"] if row else 0)
-
-
+# quotas 两张计数列是"当日用量台账"，不是配额：只记录、不拦请求。
+# 曾经的 DAILY_ANALYSIS_BUDGET 上限已去掉——它保护的是部署者那份共享 AK，但自带 AK 的用户
+# 被同一个数字管着是错的，而只对自己人开放的单机部署根本不需要拦。要查用量直接 SQL：
+#   SELECT user_id, day, analyses, agent_turns FROM quotas WHERE day = '今天';
 def consume_analysis(user_id: int) -> None:
     _bump("quotas", ("user_id", "day", "analyses"), "analyses",
           (user_id, _now().date().isoformat(), 1))

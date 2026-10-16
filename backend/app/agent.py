@@ -35,7 +35,9 @@ SYSTEM_PROMPT = """你是"15 分钟生活圈"社区体检与规划顾问，服�
 7. 不要输出 Markdown 表格和代码块。
 8. 面向的是非技术读者：回答中不要出现英文字段名、内部变量名或 JSON 键（如 blindspot_count），一律改用中文业务表述。"""
 
-_COORD = lambda name, desc: {"type": "number", "description": f"{desc}（{name}）"}
+def coord_param(name: str, desc: str) -> dict:
+    """经纬度入参的模板：说明里带上内部名，模型回填时不容易把 lat/lng 搞反。"""
+    return {"type": "number", "description": f"{desc}（{name}）"}
 
 TOOLS = [
     {"type": "function", "function": {
@@ -49,14 +51,14 @@ TOOLS = [
         "description": "对某中心点做完整的 15 分钟生活圈体检：基于真实路网的等时圈、四类民生设施覆盖统计、"
                        "服务盲区识别（1 公里内无菜市场/药店/小学等）、健康分。计算较重但结果会缓存。",
         "parameters": {"type": "object", "properties": {
-            "lat": _COORD("纬度", "中心点纬度"), "lng": _COORD("经度", "中心点经度")},
+            "lat": coord_param("纬度", "中心点纬度"), "lng": coord_param("经度", "中心点经度")},
             "required": ["lat", "lng"]}}},
     {"type": "function", "function": {
         "name": "nearest_facility",
         "description": "查询某点周边指定类别最近的民生设施，返回名称、地址与真实路网步行距离和时间，"
                        "并判断是否在 15 分钟步行圈内。",
         "parameters": {"type": "object", "properties": {
-            "lat": _COORD("纬度", "查询点纬度"), "lng": _COORD("经度", "查询点经度"),
+            "lat": coord_param("纬度", "查询点纬度"), "lng": coord_param("经度", "查询点经度"),
             "category": {"type": "string", "enum": list(CATEGORIES),
                          "description": "设施类别：medical 基础医疗 / education 教育 / shopping 购物 / elderly 养老"},
             "keyword": {"type": "string", "description": "可选，细化关键词，如「药店」「菜市场」「小学」"}},
@@ -65,15 +67,15 @@ TOOLS = [
         "name": "walking_time",
         "description": "计算两点之间的真实路网步行距离与耗时（含红绿灯、天桥、围挡等阻力），不是直线距离。",
         "parameters": {"type": "object", "properties": {
-            "from_lat": _COORD("纬度", "起点纬度"), "from_lng": _COORD("经度", "起点经度"),
-            "to_lat": _COORD("纬度", "终点纬度"), "to_lng": _COORD("经度", "终点经度")},
+            "from_lat": coord_param("纬度", "起点纬度"), "from_lng": coord_param("经度", "起点经度"),
+            "to_lat": coord_param("纬度", "终点纬度"), "to_lng": coord_param("经度", "终点经度")},
             "required": ["from_lat", "from_lng", "to_lat", "to_lng"]}}},
     {"type": "function", "function": {
         "name": "search_poi",
         "description": "圆形范围 POI 检索，返回名称、地址与坐标列表，用于核查某类设施的实际分布。",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string", "description": "检索关键词，如「社区卫生服务中心」"},
-            "lat": _COORD("纬度", "圆心纬度"), "lng": _COORD("经度", "圆心经度"),
+            "lat": coord_param("纬度", "圆心纬度"), "lng": coord_param("经度", "圆心经度"),
             "radius": {"type": "integer", "description": "检索半径（米），默认 1500，上限 3000"},
             "limit": {"type": "integer", "description": "返回条数上限，默认 10"}},
             "required": ["query", "lat", "lng"]}}},
@@ -83,7 +85,7 @@ TOOLS = [
                        "与同类设施的距离、是否填补已核验盲区打分，并用真实步行路线复核候选点到社区中心的可达性。"
                        "调用前该点位必须已做过体检，否则返回错误提示。",
         "parameters": {"type": "object", "properties": {
-            "lat": _COORD("纬度", "社区中心纬度"), "lng": _COORD("经度", "社区中心经度"),
+            "lat": coord_param("纬度", "社区中心纬度"), "lng": coord_param("经度", "社区中心经度"),
             "biz": {"type": "string", "enum": list(BIZ_TYPES),
                     "description": "业态：pharmacy 药店 / market 生鲜菜店 / elderly 养老驿站 / "
                                    "childcare 托幼 / clinic 诊所或卫生服务"}},

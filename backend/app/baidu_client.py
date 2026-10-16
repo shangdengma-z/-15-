@@ -355,7 +355,8 @@ class BmapClient:
                 {"distances": [{"distance": round(straight_line_m(o, dd) * random.uniform(1.15, 1.4))}
                                for dd in dests]} for o in origins]}}
         if "place" in path:
-            if not params.get("location") and str(params.get("query", ""))[-1:] in ("市", "县", "区", "省", "州", "旗", "镇", "乡"):
+            if (not params.get("location")
+                    and str(params.get("query", ""))[-1:] in ("市", "县", "区", "省", "州", "旗", "镇", "乡")):
                 return {"status": 0, "total": 0, "results": []}   # 区划名做城市内检索一般空手而归
             lat, lng = (map(float, params["location"].split(",")) if params.get("location")
                         else (39.908, 116.397))

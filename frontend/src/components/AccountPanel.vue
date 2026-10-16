@@ -26,17 +26,6 @@
     <p v-if="msg" class="msg" :class="{ bad: !msgOk }">{{ msg }}</p>
 
     <section>
-      <div class="eyebrow">今日额度</div>
-      <div class="quota">
-        <em class="num">{{ budgetLeft ?? '—' }}</em>
-        <div class="bar"><i :style="{ width: quotaPct }"></i></div>
-        <span>次可用 / 每日 {{ budgetTotal ?? '—' }} 次 · 一次体检约 180 次路线规划调用，额度按提交次数计</span>
-      </div>
-      <p v-if="budgetLeft === 0" class="warnline">今日次数已用完：明天自动恢复，
-        或在「接入设置」勾上合成路网演示继续走流程（不烧真实配额）。</p>
-    </section>
-
-    <section>
       <div class="eyebrow">我的数据</div>
       <div class="grid">
         <div class="cell"><em class="num">{{ stats.communities || 0 }}</em><span>建档社区</span></div>
@@ -87,8 +76,6 @@ import { errorMessage, logout, updateNickname } from '../api'
 
 const props = defineProps({
   account: { type: Object, default: null },
-  budgetLeft: { type: Number, default: null },
-  budgetTotal: { type: Number, default: null },
   stats: { type: Object, default: () => ({}) }
 })
 const emit = defineEmits(['signed-out', 'renamed', 'goto'])
@@ -109,13 +96,6 @@ const initial = computed(() => {
   const s = (a?.nickname || a?.email || '?').trim()
   return /[一-龥]/.test(s[0]) ? s[0] : s.slice(0, 1).toUpperCase()
 })
-// 额度条：分母是服务端告知的当日上限，不让页面自己猜
-const quotaPct = computed(() => {
-  const { budgetLeft, budgetTotal } = props
-  if (budgetLeft == null || !budgetTotal) return '0%'
-  return Math.max(0, Math.min(100, Math.round((budgetLeft / budgetTotal) * 100))) + '%'
-})
-
 function startEdit() {
   draft.value = props.account?.nickname || ''
   editing.value = true
@@ -172,12 +152,6 @@ section + section { padding-top: 14px; border-top: 1px solid var(--line); }
 .mail { font-size: 11px; color: var(--muted); word-break: break-all; }
 .since { font-size: 10.5px; color: var(--dim); }
 .since .num { color: var(--muted); }
-
-.quota { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.quota em { font-style: normal; font-size: 26px; font-weight: 700; color: var(--accent); line-height: 1; }
-.quota .bar { flex: 1; min-width: 60px; height: 5px; border-radius: 3px; background: var(--surface-3); overflow: hidden; }
-.quota .bar i { display: block; height: 100%; background: var(--accent); transition: width .2s; }
-.quota span { font-size: 10px; color: var(--dim); width: 100%; }
 
 .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .cell { display: flex; flex-direction: column; gap: 2px; padding: 9px 10px;
