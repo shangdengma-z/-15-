@@ -14,6 +14,8 @@ def _env(name: str, default: str = "") -> str:
 class Settings:
     server_ak: str = field(default_factory=lambda: _env("BMAP_SERVER_AK"))
     server_sk: str = field(default_factory=lambda: _env("BMAP_SERVER_SK"))
+    # 浏览器端地图 AK：运行时经 /env.js 注进页面，改它只需重启容器，不必重新构建镜像
+    browser_ak: str = field(default_factory=lambda: _env("VITE_BMAP_AK"))
     # 限流按服务独立计。2026-10-14 账号的路线规划配额升到 30 QPS / 1 万次每天，
     # 之前记录的是个人 AK 的默认档（步行 3 QPS / 5000 次），见 baidu_client.py 与 .env 注释
     qps: float = field(default_factory=lambda: float(_env("BMAP_QPS", "30")))

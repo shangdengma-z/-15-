@@ -1,4 +1,8 @@
-const AK = import.meta.env.VITE_BMAP_AK || ''
+// 浏览器端地图 AK 的来源有三层，从优先到兜底：
+//   1) 运行时注入的 /env.js（部署后改 .env 就生效，不用重新构建镜像）
+//   2) 构建期 --build-arg VITE_BMAP_AK（本地 dev 走 frontend/.env.local）
+//   3) 空 → 无密钥加载，地图能出但瓦片会鉴权失败（只在本地 demo 能忍）
+const AK = (window.__CIRCLE15__ && window.__CIRCLE15__.bmapAk) || import.meta.env.VITE_BMAP_AK || ''
 let loading = null
 
 /** 动态加载 BMapGL，AK 留空时走无密钥加载（本地 demo）。 */

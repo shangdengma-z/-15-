@@ -68,7 +68,7 @@ onMounted(async () => {
   try {
     BMapGL = await loadBmapGL()
   } catch (e) {
-    loadError.value = 'Docker 走根目录 .env 的 VITE_BMAP_AK，本地 dev 走 frontend/.env.local；留空则无密钥加载。'
+    loadError.value = '地图密钥没拿到：线上看后端 /env.js 是否给了 VITE_BMAP_AK，本地 dev 看 frontend/.env.local。'
     return
   }
   map = new BMapGL.Map(el.value)

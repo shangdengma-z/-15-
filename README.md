@@ -215,9 +215,9 @@ npm run dev
 # 1) 服务器准备：swap、目录、证书（脚本会打印它不替你做的防火墙与百度控制台两步）
 bash deploy/server-setup.sh your.domain.com
 
-# 2) 根目录 .env：AUTH_ENABLED=1、DB_BACKEND=mysql、DB_*（含 DB_ROOT_PASSWORD）、
-#    SECRET_KEY/MASTER_KEY（各生成一个随机 32 字节串）、VITE_BMAP_AK=浏览器端类型 AK
-#    注意：上线实例里不要写 BMAP_SERVER_AK / LLM_API_KEY，让每个用户填自己的
+# 2) 服务器上那份 .env：直接拷模板改四处占位符（AK / SECRET_KEY / MASTER_KEY / 浏览器端 AK）
+#    cp deploy/env.server.example /srv/bisai/.env && chmod 600 /srv/bisai/.env
+#    模板已按"共享部署者百度 AK + 大模型 key 留空"的策略写好，含每项为什么要这么填
 
 # 3) 起服务（只有 nginx 边缘容器对外听 80/443，3306 与 8000 都不发布）
 docker compose --project-directory . -f deploy/docker-compose.prod.yml up -d --build

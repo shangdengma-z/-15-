@@ -1,0 +1,53 @@
+# 单镜像部署：前端构建产物 + FastAPI 同一个容器，一条 docker run 就能对外服务。
+# 适合只有一个 ACR 仓库、机器只有 2C2G 的情形（不想再拆 nginx/fe/backend 三个容器）。
+#
+# 在仓库根目录构建（context 必须是根，两个阶段要同时看到 backend/ 和 frontend/）：
+#   docker build -f Dockerfile.single \
+#     --build-arg VITE_BMAP_AK=你的浏览器端AK \
+#     -t crpi-qgmo9hheqvjve5b0.cn-beijing.personal.cr.aliyuncs.com/15fen/15fen:v1 .
+#
+# 国内网络下 buildkit 不继承 Docker Desktop 的代理，卡拉取时先手动拉基础镜像并关掉 buildkit：
+#   docker pull node:20-alpine && docker pull python:3.12-slim
+#   DOCKER_BUILDKIT=0 docker build -f Dockerfile.single -t ... .
+#
+# 跑起来（所有密钥走 --env-file，镜像里不含服务端 AK 与口令）：
+#   docker run -d --name circle15 -p 80:8000 --env-file .env \
+#     -v $(pwd)/data:/srv/data -v $(pwd)/frontend/dist:/srv/frontend/dist:ro \
+#     crpi-.../15fen/15fen:v1
+# 说明：dist 已经拷进镜像，最后那个 -v 只是"想换前端而不重新构建镜像"时才需要。
+
+# ---------- 阶段 1：构建前端 ----------
+FROM node:20-alpine AS fe
+
+WORKDIR /fe
+# 先只拷依赖清单：源码改动不会让 npm ci 层缓存失效
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+# 浏览器端地图 AK 有两种给法，任选（也可以两个都给）：
+#   A. 运行时注入：服务器 .env 里填 VITE_BMAP_AK，后端 /env.js 发给页面 —— 换 key 不用重建镜像（推荐）
+#   B. 编译期注入：--build-arg VITE_BMAP_AK=xxx —— 值会被烘进 dist，镜像即含该 key，仓库要设私有
+# 两边都不给时地图能加载但瓦片鉴权失败（页面会提示"地图密钥没拿到"）。
+ARG VITE_BMAP_AK=""
+ENV VITE_BMAP_AK=${VITE_BMAP_AK}
+RUN npm run build
+
+# ---------- 阶段 2：后端 + 静态站 ----------
+FROM python:3.12-slim
+
+WORKDIR /srv
+COPY backend/requirements.txt ./
+# 账号层在 DB_BACKEND=sqlite 时不额外依赖 MySQL 驱动之外的小包，这里整包装上最省事
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+
+COPY backend/app ./app
+COPY --from=fe /fe/dist ./frontend/dist
+
+# 容器内不写 uvicorn 的 --reload：生产用多 worker 或干脆单 worker（SQLite 写入友好）
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4).status==200 else 1)"
+
+# 单 worker 是刻意的：SQLite 走文件锁，多 worker 并发写同一档案库只会互相等；
+# 一次体检本来就丢到线程池 + 全局并发闸（JOB_SLOTS），瓶颈不在进程数上。
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

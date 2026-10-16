@@ -4,12 +4,16 @@ sqlite 是同步阻塞库，所有读写经 asyncio.to_thread 丢到线程池，
 """
 
 import asyncio
+import json
+import os
 import time
 import uuid
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import auth, authapi, db, scope
@@ -126,6 +130,18 @@ async def auth_gate(request: Request, call_next):
                 h.get(authapi.CSRF_HEADER, "")):
             return JSONResponse(status_code=403, content={"detail": "CSRF 校验未通过，请刷新页面重试"})
     return await call_next(request)
+
+
+@app.get("/env.js")
+async def env_js():
+    """运行时把浏览器端地图 AK 交给前端：换 key 只改 `.env` 重启容器，不必重新构建镜像。
+
+    浏览器类型的 AK 本来就是公开物（任何人查看页面源码都能看到），真正的约束是
+    控制台里的 Referer 白名单；所以这里不鉴权，但也不能让它被 CDN 缓存到换 key 之后。
+    """
+    body = f"window.__CIRCLE15__={json.dumps({'bmapAk': settings.browser_ak})};"
+    return PlainTextResponse(body, media_type="application/javascript",
+                             headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/health")
@@ -559,3 +575,28 @@ async def get_agent(job_id: str):
         return {"status": "error", "error": job.get("error")}
     return {"status": "done",
             **{k: v for k, v in job.items() if k not in ("status", "started", "progress")}}
+
+
+# ---------- 单镜像部署：同一个进程兼作前端静态站（Dockerfile.single） ----------
+# 目录不存在时下面这些路由根本不注册，本地开发（vite dev）与 backend-only 镜像行为不变。
+# 用 STATIC_DIR 环境变量指到别处，主要是为了让这条路径能被自测覆盖到。
+STATIC_DIR = Path(os.getenv("STATIC_DIR") or Path(__file__).resolve().parents[1] / "frontend" / "dist")
+
+if (STATIC_DIR / "index.html").is_file():
+    app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
+
+    @app.get("/{path:path}", include_in_schema=False)
+    async def spa(path: str):
+        if path.startswith("api/"):
+            # 接口 404 必须还是 JSON，不能回一页 HTML：前端与 curl 都会解析响应体
+            raise HTTPException(404, "not found")
+        f = (STATIC_DIR / path).resolve()
+        if not f.is_relative_to(STATIC_DIR.resolve()):
+            raise HTTPException(400, "bad path")
+        if f.is_file():
+            return FileResponse(f)
+        if "." in path.split("/")[-1]:
+            # 带扩展名的资源请求找不到就是 404：回一页 HTML 会让浏览器按 CSS/JS 解析出错，
+            # 报错信息还指向别的文件，比 404 难查得多
+            raise HTTPException(404, "not found")
+        return FileResponse(STATIC_DIR / "index.html")
