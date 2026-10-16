@@ -53,7 +53,8 @@ BOLD_RE = re.compile(r'^\*\*(.+?)\*\*$')
 
 def east_asia(style_or_run, name):
     """只设 ascii 字体不设 eastAsia，中文会掉回默认字体——中文文档的必踩坑。"""
-    rpr = style_or_run.element.get_or_add_rPr() if hasattr(style_or_run, 'element') else style_or_run._element.get_or_add_rPr()
+    holder = style_or_run.element if hasattr(style_or_run, 'element') else style_or_run._element
+    rpr = holder.get_or_add_rPr()
     fonts = rpr.find(qn('w:rFonts'))
     if fonts is None:
         fonts = OxmlElement('w:rFonts')

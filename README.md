@@ -6,7 +6,6 @@
 
 > 赛题：【开源 AI 工具赛道】基于地图开放能力的"15 分钟生活圈"智能体检与规划助手
 >
-> **在线演示**：<https://zhaoboyi.online>（开源 AI 工具赛道 · 百度地图企业命题 · 学生团队作品）
 
 | 文档 | 用途 |
 |---|---|
@@ -277,7 +276,9 @@ crontab -e   # 40 3 * * * cd /srv/bisai && bash deploy/backup.sh >> /var/log/cir
 
 ## 坐标系统说明
 全链路统一使用百度 **BD09LL** 坐标系（REST API 与 JSAPI 一致），无需额外坐标转换；
-若接入其他来源数据，先调用 `/coord/v3/convert` 转换。
+若接入 GPS(WGS84) 或高德/腾讯(GCJ02) 来源的数据，先调百度的坐标转换接口
+`/coord/v3/convert` 转成 BD09LL 再进本系统（本系统刻意不调它，理由见
+`docs/capability_manifest.json` 的 `coord_convert` 条目）。
 
 ## 项目结构
 ```
