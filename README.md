@@ -1,10 +1,19 @@
 # 15 分钟生活圈智能体检与规划助手
 
-基于百度地图开放能力的社区生活圈"体检"工具：输入任意社区中心点，自动计算基于**真实路网**的
+基于百度地图开放能力的社区生活圈"体检"工具：输入任意社区中心点（或直接搜省/市/**县与县级市**），自动计算基于**真实路网**的
 15 分钟步行等时圈，统计圈内医疗 / 教育 / 购物 / 养老四类民生设施覆盖情况，
-识别并核验"周边 1 公里内缺乏设施"的**服务盲区**，输出可视化体检报告。
+识别并核验"周边 1 公里内缺乏设施"的**服务盲区**，对照国标与上海导则给达标结论，输出可视化体检报告与选址建议。
 
 > 赛题：【开源 AI 工具赛道】基于地图开放能力的"15 分钟生活圈"智能体检与规划助手
+>
+> **在线演示**：<https://zhaoboyi.online>（开源 AI 工具赛道 · 百度地图企业命题 · 学生团队作品）
+
+| 文档 | 用途 |
+|---|---|
+| 本 README | 怎么跑起来、怎么部署、每个功能与口径在哪 |
+| [`docs/作品介绍文档.md`](docs/作品介绍文档.md) | 赛题要求的作品介绍：背景 / 技术架构 / 应用场景 / 创新点（对照两套评分维度撰写，可导出 PDF 随邮件提交） |
+| [`docs/技术设计文档.md`](docs/技术设计文档.md) | 赛题交付第 3 条要求的五节：API 调用策略 / 等时圈算法 / POI 清洗 / 盲区识别 / 真实数据对比测试 |
+| [`ROADMAP.md`](ROADMAP.md) | 已知边界与赛后计划（赛道级"长期发展"维度看的就是这个） |
 
 ## 30 秒跑通（不需要任何密钥）
 
@@ -17,6 +26,9 @@ docker compose up --build
 脚本会自动装依赖、以 **Mock 模式**（`BMAP_MOCK=1`）启动后端，不消耗任何百度配额、不需要 AK/SK，
 打开 http://localhost:5173 即可点选社区、生成等时圈与盲区报告、使用 AI 规划助手（规则模式）。
 要接**真实路网**数据：`cp .env.example .env` 填入 `BMAP_SERVER_AK` 后正常启动即可。
+
+目录：[功能演示](#功能演示) · [核心技术设计](#核心技术设计) · [快速开始](#快速开始) ·
+[部署上线](#部署上线多用户可选) · [API 文档](#api-文档) · [测试](#测试) · [交付物](#交付文档与证据件)
 
 ## 功能演示
 
@@ -123,7 +135,7 @@ docker compose up --build
   （对采样中心、射线数、半径与全部实测耗时取 sha256 前 16 位），改任一采样点即失效
 
 ### 规划智能体（LLM 工具编排）
-把体检能力封装为 5 个 function-calling 工具交给大模型自主编排，对应行业智能体的三要素：
+把体检能力封装为 6 个 function-calling 工具交给大模型自主编排，对应行业智能体的三要素：
 任务规划、工具调用、结果落地。
 
 | 工具 | 能力来源 |
@@ -133,6 +145,7 @@ docker compose up --build
 | `nearest_facility` | 最近某类设施 + 真实步行距离/时间（步行路径规划 v2） |
 | `walking_time` | 两点真实路网步行耗时 |
 | `search_poi` | 圆形范围 POI 检索 |
+| `site_advice` | 选址建议：三因子评分 + 候选点步行实测复核 |
 
 工程约束：
 - **受限循环**：单轮对话工具调用轮数上限 `AGENT_MAX_STEPS`（默认 4），超限强制收敛出结论
@@ -145,20 +158,27 @@ docker compose up --build
 ## 快速开始
 
 ### 环境准备
-1. 在[百度地图开放平台](https://lbsyun.baidu.com/)创建两个应用：
-   - **浏览器端** AK → 填 `VITE_BMAP_AK`（前端地图渲染；建议配置 IP 白名单）
-   - **服务端** AK+SK → 填 `BMAP_SERVER_AK` / `BMAP_SERVER_SK`（REST API，需开通
-     步行路径规划、位置搜索、距离矩阵、正逆地理编码）
+1. 在[百度地图开放平台](https://lbsyun.baidu.com/)创建**两个**应用（类型选错会直接跑不通，两把 AK 不通用）：
+   - **浏览器端** AK → 填 `VITE_BMAP_AK`，只负责前端底图渲染。它的访问控制是 **Referer 白名单**
+     （填域名、不带协议与路径，例如 `zhaoboyi.online`、`*.zhaoboyi.online`、`localhost`）；
+     留空 = 不限制。注意百度对 `.online` 这类新通用顶级域可能判"白名单格式错误"，
+     此时要么提工单要么留空——这把 key 本来就是公开物，只防盗链。
+   - **服务端** AK（+SK，若应用开了 SN 校验）→ 填 `BMAP_SERVER_AK` / `BMAP_SERVER_SK`，
+     负责全部 REST 调用（步行路径规划、批量距离矩阵、位置搜索、正/逆地理编码）。
+     它的访问控制是 **IP 白名单**：本机调试填家里/机房出口 IPv4，上线后要加**服务器公网 IPv4**，
+     否则部署完第一个请求就是 403。
 2. 配置密钥（**已 .gitignore 排除，勿提交**）：
    ```bash
    cp .env.example .env   # 编辑 .env 填入 AK/SK
    ```
-   - 用 **Docker 部署**：三把密钥（`BMAP_SERVER_AK`、`VITE_BMAP_AK`、`LLM_API_KEY`）都写在根目录 `.env` 里，
-     `docker compose` 会用它做变量插值并把浏览器端 AK 注入前端构建产物。
-   - 用 **本地 npm 开发**：前端 AK 另放 `frontend/.env.local`（`cp frontend/.env.example frontend/.env.local`），
-     Vite 只读该文件。
+   - 浏览器端 AK 走**运行时注入**：后端把它经 `GET /env.js` 交给页面（见 `main.py`），
+     所以换 key / 换域名只改 `.env` 重启进程即可，不必重新构建前端镜像；
+     构建期 `--build-arg VITE_BMAP_AK=` 仍然支持（会把值烘进 `dist`，仓库需设私有）。
+   - 用 **本地 npm 开发**：前端 AK 也可以只放 `frontend/.env.local`，`/env.js` 由 vite 代理转给后端，
+     两边不同值时**以后端为准**。
 3. （可选）规划智能体：在 `.env` 填 `LLM_API_KEY`（OpenAI 兼容接口，默认 DeepSeek）。
-   留空则 AI 面板自动运行在规则模式，其余功能不受影响。
+   留空则 AI 面板自动运行在规则模式，其余功能不受影响。**公网实例建议留空**：
+   按 token 计费且没有额度条可看，让想用助手的人填自己的 key（默认只存在他浏览器里）。
 
 ### Docker 一键启动
 ```bash
@@ -190,8 +210,9 @@ npm run dev
 
 ## 部署上线（多用户，可选）
 
-默认 `AUTH_ENABLED=0`：单机、无登录、无跨域限制，上面的所有自测与录屏都走这条路径。
-要放到公网给多人自助使用时，把 `AUTH_ENABLED` 置 1，此时：
+`.env` 里 `AUTH_ENABLED=0` 时是免登录单机版（评审与录屏最省事的形态，本仓库的自测默认按它跑）；
+置 1 后启用注册/登录、按人隔离与「个人中心」——**线上 <https://zhaoboyi.online> 跑的就是 `AUTH_ENABLED=1`
++ `DB_BACKEND=sqlite`**，没装 MySQL。开启多用户后的行为差异：
 
 | 变化 | 说明 |
 |---|---|
@@ -214,26 +235,45 @@ npm run dev
 否则你一登录会发现原来那批社区记录"不见了"；之后注册的账号仍各看各的。
 `GET /api/health` 里的 `auth` 与 `auth_backend` 会如实报出账号库连没连上。
 
+### 路线 A · 单镜像（本项目线上就是这条）
+
+一个容器同时给前端与 API（`Dockerfile.single`：node 构建 → python 镜像兼作静态站，
+`/env.js` 运行时注入浏览器端 AK），账号库与档案都在挂载的 `data/` 里，**一台 2C2G 不装 MySQL 也能跑多用户**。
+
 ```bash
-# 1) 服务器准备：swap、目录、证书（脚本会打印它不替你做的防火墙与百度控制台两步）
-bash deploy/server-setup.sh your.domain.com
+# 本地：构建并推到镜像仓库（国内网络下 buildkit 不继承代理时先手动 pull 基础镜像 + DOCKER_BUILDKIT=0）
+docker build -f Dockerfile.single -t <registry>/15fen/15fen:v4 .
+docker push <registry>/15fen/15fen:v4
 
-# 2) 服务器上那份 .env：直接拷模板改四处占位符（AK / SECRET_KEY / MASTER_KEY / 浏览器端 AK）
-#    cp deploy/env.server.example /srv/bisai/.env && chmod 600 /srv/bisai/.env
-#    模板已按"共享部署者百度 AK + 大模型 key 留空"的策略写好，含每项为什么要这么填
+# 服务器：--env-file 只在创建容器时读，改完 .env 必须 rm -f 再 run（restart 无效）
+docker pull <registry>/15fen/15fen:v4
+docker rm -f 15fen-app
+docker run -d --name 15fen-app --restart unless-stopped -p 8080:8000 \
+  --env-file /srv/bisai/.env -v /srv/bisai/data:/srv/data <registry>/15fen/15fen:v4
+curl -s localhost:8080/api/health          # 看 ak_configured / auth / auth_backend
+```
 
-# 3) 起服务（只有 nginx 边缘容器对外听 80/443，3306 与 8000 都不发布）
+`.env` 用 `deploy/env.server.example` 起底（键名、每项为什么这么填、密钥策略都写在注释里）；
+外面再套一层反代（nginx 或 Cloudflare Tunnel 均可）把域名指到 `127.0.0.1:8080`，
+加一行 `proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;` 后端才会给会话 cookie 打 `Secure`。
+
+### 路线 B · 全栈编排（需要 MySQL 与自带 TLS 时用）
+
+```bash
+bash deploy/server-setup.sh your.domain.com        # swap、目录、证书（防火墙与百度控制台它只打印不代做）
+cp deploy/env.server.example .env && chmod 600 .env
 docker compose --project-directory . -f deploy/docker-compose.prod.yml up -d --build
-curl -i https://your.domain.com/api/health
-
-# 4) 每日备份（MySQL + SQLite 两份都备，保留 14 份）
 crontab -e   # 40 3 * * * cd /srv/bisai && bash deploy/backup.sh >> /var/log/circle15-backup.log 2>&1
 ```
 
-`deploy/my.cnf` 是按 2C2G 调的（关 `performance_schema` 与 binlog、256M buffer pool、40 连接），
-`performance_schema` 一项在默认配置下就能吃掉小机器一半内存。前端镜像里编译进去的只有
-**浏览器端类型**的地图 AK（展示底图要用，靠 Referer 白名单约束），服务端 REST 的 AK 绝不进镜像，
-所以不要把构建好的前端镜像发给别人。
+`docker-compose.prod.yml` 起 4 个服务（mysql / backend / fe / proxy），只有 nginx 边缘对外听 80/443，
+3306 与 8000 都不发布端口；`deploy/my.cnf` 是按 2C2G 调的（关 `performance_schema` 与 binlog、
+256M buffer pool、40 连接——默认配置的 MySQL 8 光 `performance_schema` 就能吃掉小机器一半内存）；
+`deploy/backup.sh` 每天同时备 MySQL（账号/会话/额度）与 SQLite（档案），留 14 份。
+
+两条路线共同的纪律：**服务端 AK、大模型 key、`SECRET_KEY`/`MASTER_KEY` 只存在于服务器 `.env`**，
+`.gitignore` 与 `.dockerignore` 都排掉了 `.env` 与 `data/`，镜像里不含任何凭据
+（除非你主动用 `--build-arg` 烘浏览器端 AK——那是公开物，但仍会把仓库设私有的习惯保住）。
 
 ## 坐标系统说明
 全链路统一使用百度 **BD09LL** 坐标系（REST API 与 JSAPI 一致），无需额外坐标转换；
@@ -312,6 +352,7 @@ docs/               技术设计文档
 
 | 文件 | 内容 |
 |---|---|
+| `docs/作品介绍文档.md` | 赛题要求的作品介绍：项目背景 / 技术架构 / 应用场景 / 创新点，并逐条对照两套评分维度（含真实数据实测表、已知局限与复现指引），可直接导出 PDF 随邮件提交 |
 | `docs/技术设计文档.md` | 赛题第 3 条要求的全部五节：API 调用策略 / 等时圈算法 / POI 清洗 / 盲区识别 / 真实对比测试报告，另附显式偏离与未验证项清单 |
 | `docs/bench_route_strategy.json` | 批量 vs 逐条的出网基准：24 对路线 = 24 次请求 vs 1 次请求，配额单位相同；20 次请求预算下覆盖率 83% vs 100%（`scripts/bench_route_strategy.py` 生成） |
 | `docs/capability_manifest.json` | 百度开放能力可用/不可用清单与决策依据（含"无公开步行等时圈 API"的核实记录） |
